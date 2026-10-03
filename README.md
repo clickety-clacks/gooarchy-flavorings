@@ -1,6 +1,6 @@
 # Gooarchy flavorings
 
-Gooarchy's taste on top of Scottland: which app widgets you get (and whose), plus the app defaults
+Gooarchy flavorings on top of Scottland: which app widgets you get (and whose), plus the app defaults
 the distro chooses. Installed by the Gooarchy distro and by Scottland's Omarchy adapter.
 
 Scottland defines what a widget is; this package chooses which ones ship. Where Omarchy has no
