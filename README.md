@@ -10,3 +10,6 @@ every override is reported to the user with its reason when it's installed (Scot
 adapter, O20/O21). App tuning is additive and removable (Scottland C7).
 
 Nothing here yet.
+
+## Choices so far
+- File browser: [Strata](https://github.com/lgse/strata) (Mike, 2026-10-04), installed and set as the file manager.
