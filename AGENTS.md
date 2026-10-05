@@ -19,3 +19,9 @@ its AGENTS.md, core/INVARIANTS.md (principles P1-P10, especially P9 and P10) and
 - **Additive and removable** app tuning: own files plus at most one marked include line (Scottland C7).
 - **Testing**: never on osanwe (Mike's daily machine); test on plumbus with real input. Report done
   only after that.
+
+## Privacy of developer networks (Mike, 2026-10-04)
+
+Never reveal the internal topology or identifiers of any developer's network here (host names, IPs, tailnet
+or domain names, user names, home paths), in code, docs, commits, fixtures or logs. If a component needs to
+reach a machine, its address is a configurable field set at install time, never a constant.
