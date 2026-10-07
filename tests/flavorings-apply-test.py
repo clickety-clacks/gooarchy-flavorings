@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Test gooarchy-flavorings-apply in throwaway home directories, with stand-ins for the desktop
-commands it calls (gsettings, dconf, xdg-user-dirs-update, pgrep). No desktop, no real settings.
+"""Test gooarchy-flavorings-apply and gooarchy-theme in throwaway home directories, with
+stand-ins for the desktop commands they call (gsettings, dconf, xdg-user-dirs-update, pgrep). No
+desktop, no real settings.
 
   tests/flavorings-apply-test.py      exits 1 if anything fails
 
 Covered: existing private files keep mode 0600 (and their contents); new private files are created
 0600; a symlinked config is left alone and reported; an app that's running is deferred; an
 explicitly set color scheme (even "default") is kept; an interrupted write leaves the old file and
-no temporary file; two runs at once leave valid files.
+no temporary file; two runs at once leave valid files; gooarchy-theme's light/dark/toggle set the
+same color-scheme values as before, and its Sunlight note's text and presence follow
+~/.config/scottland/solar.ini.
 """
 import importlib.machinery
 import importlib.util
@@ -20,6 +23,7 @@ import tempfile
 
 repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tool = os.path.join(repo, "bin", "gooarchy-flavorings-apply")
+theme_tool = os.path.join(repo, "bin", "gooarchy-theme")
 failures = 0
 
 
@@ -134,6 +138,61 @@ with tempfile.TemporaryDirectory() as home:
         p.wait()
     data = json.load(open(os.path.join(home, ".claude.json")))
     expect("concurrent runs leave valid files", data == {"keep": 1, "preferredNotifChannel": "terminal_bell"}, data)
+
+# gooarchy-theme: light/dark/toggle keep setting the same color-scheme values as before, and the
+# Sunlight note's text and presence follow ~/.config/scottland/solar.ini's [solar] enabled key.
+def theme_stubs(bindir):
+    os.makedirs(bindir, exist_ok=True)
+    gsettings = """#!/bin/sh
+state="$HOME/.gsettings-state"
+case "$1" in
+  get) printf "'%s'\\n" "$(cat "$state" 2>/dev/null || echo prefer-light)" ;;
+  set) printf "%s\\n" "$4" >"$state" ;;
+esac
+"""
+    path = os.path.join(bindir, "gsettings")
+    with open(path, "w") as f:
+        f.write(gsettings)
+    os.chmod(path, 0o755)
+
+
+def theme_run(home, arg=None, solar=None):
+    bindir = os.path.join(home, ".stubs")
+    theme_stubs(bindir)
+    if solar is not None:
+        solar_path = os.path.join(home, ".config", "scottland", "solar.ini")
+        os.makedirs(os.path.dirname(solar_path), exist_ok=True)
+        with open(solar_path, "w") as f:
+            f.write(solar)
+    env = {"HOME": home, "PATH": f"{bindir}:/usr/bin:/bin"}
+    args = [theme_tool] + ([arg] if arg else [])
+    return subprocess.run(args, env=env, capture_output=True, text=True)
+
+
+def gsettings_value(home):
+    path = os.path.join(home, ".gsettings-state")
+    return open(path).read().strip() if os.path.exists(path) else ""
+
+
+with tempfile.TemporaryDirectory() as home:
+    r = theme_run(home, "light", solar="[solar]\nenabled = true\n")
+    expect("light still sets prefer-light", gsettings_value(home) == "prefer-light", r.stdout + r.stderr)
+    expect("Sunlight-on note describes the transition, not a timer",
+           "holds until the next sunrise or sunset" in r.stderr and "when Sunlight switches it" in r.stderr
+           and "every" not in r.stderr and "turn it off" not in r.stderr.lower(), r.stderr)
+
+with tempfile.TemporaryDirectory() as home:
+    r = theme_run(home, "dark", solar="[solar]\nenabled = true\n")
+    expect("dark still sets prefer-dark", gsettings_value(home) == "prefer-dark", r.stdout + r.stderr)
+
+with tempfile.TemporaryDirectory() as home:
+    theme_run(home, "dark", solar="[solar]\nenabled = true\n")
+    r = theme_run(home, "toggle", solar="[solar]\nenabled = true\n")
+    expect("toggle from dark still sets prefer-light", gsettings_value(home) == "prefer-light", r.stdout + r.stderr)
+
+with tempfile.TemporaryDirectory() as home:
+    r = theme_run(home, "light", solar="[solar]\nenabled = false\n")
+    expect("Sunlight-off prints no note", r.stderr.strip() == "", r.stderr)
 
 print(f"{'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)

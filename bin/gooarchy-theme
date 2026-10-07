@@ -7,8 +7,8 @@
 #
 # Scottland's Sunlight schedule is on unless turned off (Scottland Settings > Sunlight, or
 # enabled = false under [solar] in ~/.config/scottland/solar.ini). While it is on and knows the
-# location (GeoClue, saved coordinates, or an IP lookup), it sets the mode for the time of day
-# every few seconds, so a mode picked here only lasts while it matches the sun.
+# location (GeoClue, saved coordinates, or an IP lookup), a mode picked here holds until the next
+# sunrise or sunset; Sunlight switches the mode then, not continuously.
 key="org.gnome.desktop.interface color-scheme"
 current() { case $(gsettings get $key) in *dark*) echo dark ;; *) echo light ;; esac; }
 sunlight() {
@@ -17,7 +17,7 @@ sunlight() {
   case ${value:-true} in true | yes | 1 | on) return 0 ;; *) return 1 ;; esac
 }
 warn() {
-  sunlight && echo "Note: Scottland's Sunlight schedule is on and switches light/dark with the sun once it knows the location; turn it off in Scottland Settings > Sunlight to keep this mode." >&2
+  sunlight && echo "Note: Scottland's Sunlight schedule is on; once it knows the location, this mode holds until the next sunrise or sunset, when Sunlight switches it." >&2
   return 0
 }
 case ${1:-} in
