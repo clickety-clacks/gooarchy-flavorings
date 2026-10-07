@@ -31,6 +31,69 @@ tool = os.path.join(repo, "bin", "gooarchy-flavorings-apply")
 failures = 0
 
 
+GIO_STUB = "#!" + sys.executable + "\n" + r'''import os
+import pathlib
+import sys
+
+mime = sys.argv[2]
+desktop_names = [f"{desktop.lower()}-mimeapps.list" for desktop in
+                 os.environ.get("XDG_CURRENT_DESKTOP", "").split(":") if desktop]
+config_dirs = [pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or pathlib.Path.home() / ".config")]
+config_dirs.extend(pathlib.Path(path) for path in
+                   (os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":") if path)
+data_dirs = [pathlib.Path(os.environ.get("XDG_DATA_HOME") or pathlib.Path.home() / ".local/share")]
+data_dirs.extend(pathlib.Path(path) for path in
+                 (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":") if path)
+application_dirs = [directory / "applications" for directory in data_dirs]
+
+def desktop_exists(desktop):
+    return any((directory / desktop).is_file() for directory in application_dirs)
+
+def defaults(path):
+    section = None
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[Default Applications]" and "=" in line and not line.startswith("#"):
+            key, values = line.split("=", 1)
+            if key.strip() == mime:
+                return [value for value in values.split(";") if value and desktop_exists(value)]
+    return []
+
+for directory in config_dirs + application_dirs:
+    for name in desktop_names + ["mimeapps.list"]:
+        apps = defaults(directory / name)
+        if apps:
+            print(f'Default application for "{mime}": {apps[0]}')
+            sys.exit(0)
+
+for directory in application_dirs:
+    section = None
+    try:
+        lines = (directory / "mimeinfo.cache").read_text(errors="replace").splitlines()
+    except OSError:
+        continue
+    for line in lines:
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[MIME Cache]" and "=" in line and not line.startswith("#"):
+            key, values = line.split("=", 1)
+            if key.strip() == mime:
+                apps = [value for value in values.split(";") if value and desktop_exists(value)]
+                if apps:
+                    print(f'Default application for "{mime}": {apps[0]}')
+                    sys.exit(0)
+
+print(f"No default application for {mime}")
+'''
+
+
 def expect(name, ok, detail=""):
     global failures
     failures += 0 if ok else 1
@@ -45,6 +108,7 @@ def stubs(bindir, dconf_value="", running=""):
         "dconf": f"#!/bin/sh\nprintf '%s' \"{dconf_value}\"\n",
         "xdg-user-dirs-update": "#!/bin/sh\nmkdir -p \"$HOME/Pictures\"\n",
         "pgrep": f"#!/bin/sh\nfor a; do case \" {running} \" in *\" $a \"*) exit 0 ;; esac; done\nexit 1\n",
+        "gio": GIO_STUB,
     }
     for name, text in scripts.items():
         path = os.path.join(bindir, name)
@@ -246,7 +310,7 @@ def read(path):
     return open(path).read() if os.path.exists(path) else None
 
 
-def omarchy_system(home, strata=False):
+def omarchy_system(home, strata=False, implicit_html=False):
     """Stand-in system dirs: Omarchy's apps and default list, and Gooarchy's Scottland list."""
     share = os.path.join(home, ".sys", "share", "applications")
     apps = {"org.gnome.Nautilus.desktop": "Files", "chromium.desktop": "Chromium"}
@@ -258,6 +322,9 @@ def omarchy_system(home, strata=False):
           "x-scheme-handler/http=chromium.desktop\nx-scheme-handler/https=chromium.desktop\n")
     write(os.path.join(home, ".sys", "etc-xdg", "scottland-mimeapps.list"),
           read(os.path.join(repo, "xdg", "scottland-mimeapps.list")))
+    if implicit_html:
+        write(os.path.join(share, "mimeinfo.cache"),
+              "[MIME Cache]\ntext/html=chromium.desktop;\n")
 
 
 def fragment_lines_ok(text):
@@ -325,6 +392,21 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
     apply(home, "--override-report", omarchy=omarchy)
     expect("Omarchy: with nothing left to report, the fragment is removed", not os.path.exists(report), read(report))
     expect("Omarchy: the fragment's directory stays for Scottland to watch", os.path.isdir(os.path.dirname(report)))
+
+with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as omarchy:
+    omarchy_system(home, implicit_html=True)
+    quiet_titles(home)
+    apply(home, "--override-report", omarchy=omarchy)
+    report = os.path.join(home, ".config", "scottland", "override-report.d", "gooarchy-flavorings.txt")
+    text = read(report) or ""
+    expect("Omarchy: an implicit Chromium MIME association is not reported as a new Web pages default",
+           "Web pages" not in text, text)
+
+    omarchy_system(home, strata=True, implicit_html=True)
+    apply(home, "--override-report", omarchy=omarchy)
+    text = read(report) or ""
+    expect("Omarchy with Strata: implicit Chromium fallback stays unreported while Folders is reported",
+           "- Keys: Folders\n" in text and "Web pages" not in text, text)
 
 with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as omarchy:
     omarchy_system(home)

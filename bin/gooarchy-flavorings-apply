@@ -25,6 +25,7 @@ On Omarchy, the look is Omarchy's: the color scheme, Chromium and Ghostty defaul
 is listed in Scottland's override report through a fragment in
 ~/.config/scottland/override-report.d/, rewritten only when its contents change.
 """
+from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -339,13 +340,44 @@ def default_apps(path):
     return defaults
 
 
-def default_app(mime, lists):
-    """The handler the XDG lookup picks: the first installed app of the first list that names one."""
-    for path in lists:
-        for app in default_apps(path).get(mime, []):
-            if desktop_file(app):
-                return app
-    return None
+@contextmanager
+def xdg_config_dirs_without(excluded):
+    """Mirror XDG config dirs' MIME lists, omitting one package list for an effective-default query."""
+    excluded = Path(excluded).resolve()
+    with tempfile.TemporaryDirectory(prefix="gooarchy-mimeapps-") as scratch:
+        mirrors = []
+        for index, source in enumerate(xdg_dirs("XDG_CONFIG_DIRS", "/etc/xdg")):
+            mirror = Path(scratch) / str(index)
+            mirror.mkdir()
+            if source.is_dir():
+                for path in source.iterdir():
+                    if not path.is_file() or (path.name != "mimeapps.list" and not path.name.endswith("-mimeapps.list")):
+                        continue
+                    if path.resolve() != excluded:
+                        shutil.copyfile(path, mirror / path.name)
+            mirrors.append(str(mirror))
+        yield ":".join(mirrors)
+
+
+def gio_default_app(mime, config_dirs=None):
+    """Return the effective handler GIO selects for a Scottland session, or None if there is none."""
+    env = dict(os.environ)
+    env["XDG_CURRENT_DESKTOP"] = "Scottland:Wayfire:wlroots"
+    env["LC_ALL"] = "C"
+    if config_dirs is not None:
+        env["XDG_CONFIG_DIRS"] = config_dirs
+    result = subprocess.run(["gio", "mime", mime], env=env, capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    if result.returncode:
+        if "No default application" in output:
+            return None
+        raise RuntimeError(f"gio mime {mime} failed (exit {result.returncode}): {output.strip()}")
+    match = re.search(r"^Default application for .+?:\s*(\S+)\s*$", output, re.M)
+    if match:
+        return match.group(1)
+    if "No default application" in output:
+        return None
+    raise RuntimeError(f"gio mime {mime} did not identify its default application (exit {result.returncode})")
 
 
 def mime_entries():
@@ -354,13 +386,14 @@ def mime_entries():
                  and path.is_file()), None)
     if not ours:
         return []
-    without = [path for path in lists if path != ours]
     entries = []
-    for mime, apps in default_apps(ours).items():
-        now, was = default_app(mime, lists), default_app(mime, without)
-        if now in apps and now != was:
-            entries.append((MIME_NAMES.get(mime, mime), app_name(was) if was else "No default app",
-                            f"{app_name(now)} in a Scottland session"))
+    with xdg_config_dirs_without(ours) as config_dirs:
+        for mime, apps in default_apps(ours).items():
+            now = gio_default_app(mime)
+            was = gio_default_app(mime, config_dirs)
+            if now in apps and now != was:
+                entries.append((MIME_NAMES.get(mime, mime), app_name(was) if was else "No default app",
+                                f"{app_name(now)} in a Scottland session"))
     return entries
 
 
