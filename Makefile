@@ -5,7 +5,8 @@
 # Each Watercolor Dream theme installs as its complete Omarchy theme directory, copied as it is in
 # themes/ with its links kept, plus the two files Gooarchy's scripts read: background.webp (the
 # background preview.webp links to) and ghostty, generated from the theme's colors. The installed
-# paths are fixed: the scripts refer to them directly.
+# paths are fixed: the scripts refer to them directly. The themes' license file goes with the
+# package's licenses.
 
 DESTDIR ?=
 THEME_NAMES = watercolor-dream-light watercolor-dream-dark
@@ -25,6 +26,7 @@ install:
 	install -Dm644 tmux/tmux.conf "$(DESTDIR)/etc/tmux.conf"
 	install -Dm644 profile.d/gooarchy-flavorings.sh "$(DESTDIR)/etc/profile.d/gooarchy-flavorings.sh"
 	install -Dm644 xdg/scottland-mimeapps.list "$(DESTDIR)/etc/xdg/scottland-mimeapps.list"
+	install -Dm644 themes/LICENSE "$(DESTDIR)/usr/share/licenses/gooarchy-flavorings/themes/LICENSE"
 	set -e; for theme in $(THEME_NAMES); do \
 	  from="themes/$$theme"; to="$(SHARE)/themes/$$theme"; \
 	  install -d "$$to"; cp -RP "$$from/." "$$to/"; \
