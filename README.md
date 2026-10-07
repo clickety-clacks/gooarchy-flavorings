@@ -22,7 +22,8 @@ came the same way from Scottland's `omarchy/themes/`.
 | `bin/gooarchy-theme` | Switch between the light and dark theme | `/usr/bin/gooarchy-theme` |
 | `bin/gooarchy-flavorings-apply` | Fill in per-user defaults, once each, only where nothing is set | `/usr/bin/gooarchy-flavorings-apply` |
 | `libexec/gooarchy-wallpaper` | The theme's wallpaper, following light and dark | `/usr/lib/gooarchy-flavorings/gooarchy-wallpaper` |
-| `themes/watercolor-dream-light/`, `watercolor-dream-dark/` | The Watercolor Dream themes as Omarchy-format directories, from Scottland's repository with its license | `/usr/share/gooarchy-flavorings/themes/<theme>/` without the license, with `background.webp` and `ghostty` added |
+| `themes/watercolor-dream-light/`, `watercolor-dream-dark/` | The Watercolor Dream themes as complete Omarchy theme directories, as Scottland had them | `/usr/share/gooarchy-flavorings/omarchy-themes/<theme>/` as they are; `colors.toml`, `background.webp` and `ghostty` made from them in `/usr/share/gooarchy-flavorings/themes/<theme>/` |
+| `themes/LICENSE` | The themes' license, from Scottland's repository | `/usr/share/gooarchy-flavorings/omarchy-themes/LICENSE` |
 | `themes/ghostty-theme.py` | Builds a Ghostty theme from a theme's `colors.toml` (at install) | not installed |
 | `tmux/tmux.conf`, `profile.d/`, `xdg/` | tmux titles, mosh titles, default apps | `/etc/tmux.conf`, `/etc/profile.d/`, `/etc/xdg/` |
 | `tests/flavorings-apply-test.py` | Tests `gooarchy-flavorings-apply` in throwaway home directories | not installed |
@@ -32,9 +33,12 @@ came the same way from Scottland's `omarchy/themes/`.
     make install DESTDIR=<root>
 
 A package builds from a pinned commit of this repository by running that command into its package
-root; it needs make and Python, and nothing outside this repository. The package's dependencies and
-backup files stay with the package recipe. The installed paths are fixed because the scripts refer to
-them directly.
+root; it needs make and Python, and nothing outside this repository. `make install-themes` installs
+only the themes and their license, for a package that carries theme data alone, and
+`make install-flavorings` installs everything else. The package's dependencies and backup files stay
+with the package recipe. The installed paths are fixed because the scripts refer to them directly.
+The `themes/` path in this repository is fixed too: Scottland's Omarchy adapter can read the themes
+from a checkout.
 
 ## Testing
 
