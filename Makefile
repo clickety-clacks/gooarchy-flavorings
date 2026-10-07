@@ -2,10 +2,12 @@
 #
 #   make install DESTDIR=<root>
 #
-# Each Watercolor Dream theme installs as its directory in themes/, copied as it is with its links
-# kept, plus the two files Gooarchy's scripts read: background.webp (the background preview.webp
-# links to) and ghostty, generated from the theme's colors. The installed paths are fixed: the
-# scripts refer to them directly.
+# Each Watercolor Dream theme installs the three files Gooarchy's scripts read: colors.toml,
+# background.webp (the background preview.webp links to) and ghostty, generated from the theme's
+# colors. The installed paths are fixed: the scripts refer to them directly.
+#
+# Waiting on the distro and adapter's joint ruling: where each theme's directory in themes/ installs
+# as it is, links kept (beside those files, or in a sibling directory). Until then it isn't installed.
 
 DESTDIR ?=
 THEME_NAMES = watercolor-dream-light watercolor-dream-dark
@@ -27,7 +29,7 @@ install:
 	install -Dm644 xdg/scottland-mimeapps.list "$(DESTDIR)/etc/xdg/scottland-mimeapps.list"
 	set -e; for theme in $(THEME_NAMES); do \
 	  from="themes/$$theme"; to="$(SHARE)/themes/$$theme"; \
-	  install -d "$$to"; cp -RP "$$from/." "$$to/"; \
+	  install -Dm644 "$$from/colors.toml" "$$to/colors.toml"; \
 	  install -Dm644 "$$(readlink -f "$$from/preview.webp")" "$$to/background.webp"; \
 	  python3 themes/ghostty-theme.py "$$from/colors.toml" >"$$to/ghostty"; chmod 644 "$$to/ghostty"; \
 	done
