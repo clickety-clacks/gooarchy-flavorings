@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-tool = os.path.join(repo, "flavorings", "bin", "gooarchy-flavorings-apply")
+tool = os.path.join(repo, "bin", "gooarchy-flavorings-apply")
 failures = 0
 
 
