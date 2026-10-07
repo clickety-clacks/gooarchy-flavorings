@@ -38,11 +38,11 @@ class WidgetPackageTests(unittest.TestCase):
                 self.assertIsInstance(app_patterns, list)
                 self.assertEqual(len(app_patterns), 1)
                 pattern = app_patterns[0]
+                patterns[package_name] = pattern
                 expected_pattern = f"^{re.escape(package['app_id'])}$"
                 self.assertEqual(pattern, expected_pattern)
                 self.assertTrue(pattern.startswith("^") and pattern.endswith("$"))
                 self.assertIsNotNone(re.fullmatch(pattern, app_ids[package_name], re.IGNORECASE))
-                patterns[package_name] = pattern
 
         self.assertIsNone(
             re.fullmatch(patterns["weather"], app_ids["system-stats"], re.IGNORECASE)
