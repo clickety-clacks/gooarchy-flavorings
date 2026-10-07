@@ -11,6 +11,7 @@ DESTDIR ?=
 THEME_NAMES = watercolor-dream-light watercolor-dream-dark
 SHARE = $(DESTDIR)/usr/share/gooarchy-flavorings
 SCOTTLAND = $(DESTDIR)/usr/lib/scottland
+SCOTTLAND_WIDGETS = $(DESTDIR)/usr/share/scottland/widgets
 
 .PHONY: install
 install:
@@ -25,6 +26,12 @@ install:
 	install -Dm644 tmux/tmux.conf "$(DESTDIR)/etc/tmux.conf"
 	install -Dm644 profile.d/gooarchy-flavorings.sh "$(DESTDIR)/etc/profile.d/gooarchy-flavorings.sh"
 	install -Dm644 xdg/scottland-mimeapps.list "$(DESTDIR)/etc/xdg/scottland-mimeapps.list"
+	install -Dm644 scottland/widgets/weather/widget.toml "$(SCOTTLAND_WIDGETS)/gooarchy-weather/widget.toml"
+	install -Dm644 scottland/widgets/weather/shell.qml "$(SCOTTLAND_WIDGETS)/gooarchy-weather/shell.qml"
+	install -Dm644 scottland/widgets/weather/data.py "$(SCOTTLAND_WIDGETS)/gooarchy-weather/data.py"
+	install -Dm644 scottland/widgets/system-stats/widget.toml "$(SCOTTLAND_WIDGETS)/gooarchy-system-stats/widget.toml"
+	install -Dm644 scottland/widgets/system-stats/shell.qml "$(SCOTTLAND_WIDGETS)/gooarchy-system-stats/shell.qml"
+	install -Dm644 scottland/widgets/system-stats/data.py "$(SCOTTLAND_WIDGETS)/gooarchy-system-stats/data.py"
 	set -e; for theme in $(THEME_NAMES); do \
 	  from="themes/$$theme"; to="$(SHARE)/themes/$$theme"; \
 	  install -d "$$to"; cp -RP "$$from/." "$$to/"; \
