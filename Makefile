@@ -1,7 +1,7 @@
 # Install Gooarchy's flavorings into DESTDIR (a package build's root, or empty for the live system):
 #
 #   make install DESTDIR=<root>              everything below
-#   make install-themes DESTDIR=<root>       the Watercolor Dream themes and their license, nothing else
+#   make install-themes DESTDIR=<root>       the Watercolor Dream themes and themes/LICENSE, nothing else
 #   make install-flavorings DESTDIR=<root>   scripts, Scottland hooks and defaults, without the themes
 #
 # The themes install as complete Omarchy theme directories, copied as they are in themes/ with their
