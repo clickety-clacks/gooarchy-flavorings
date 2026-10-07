@@ -27,6 +27,26 @@ came the same way from Scottland's `omarchy/themes/`.
 | `tmux/tmux.conf`, `profile.d/`, `xdg/` | tmux titles, mosh titles, default apps | `/etc/tmux.conf`, `/etc/profile.d/`, `/etc/xdg/` |
 | `tests/flavorings-apply-test.py` | Tests `gooarchy-flavorings-apply` in throwaway home directories | not installed |
 
+## On Omarchy
+
+Installed by Scottland's Omarchy adapter, the flavorings keep Omarchy's own look and keys:
+
+- The look stays Omarchy's. The wallpaper hook starts nothing, and `gooarchy-flavorings-apply` neither
+  sets the color scheme nor touches Chromium or Ghostty (those steps aren't marked as applied either).
+- Super+Shift+F and Super+Shift+B stay Omarchy's file manager and browser: the config hook leaves
+  those two bindings out. The touchpad and screenshot settings are appended as on Gooarchy.
+- Everything else that takes effect over what the user had is listed in Scottland's override report
+  (O20), with what it was and what it is now: the Claude Code and Codex bells Gooarchy set (while
+  they're still set that way), the tmux and mosh titles where the user's own config doesn't set
+  them, and each default app from `/etc/xdg/scottland-mimeapps.list` that wins over the one the
+  user had. The list is a per-user fragment,
+  `~/.config/scottland/override-report.d/gooarchy-flavorings.txt`, which the config hook and
+  `gooarchy-flavorings-apply` bring up to date (rewriting it only when it changes, removing it when
+  nothing is left). Strata opens folders only where it's installed; without it, folders open as
+  before and the report doesn't mention it.
+
+Omarchy is recognized by its directory, `$OMARCHY_PATH` or `/usr/share/omarchy`.
+
 ## Installing and packaging
 
     make install DESTDIR=<root>
@@ -40,7 +60,7 @@ them directly.
 
     tests/flavorings-apply-test.py
 
-It needs only Python and a POSIX shell: the desktop commands it calls are stand-ins.
+It needs only Python and a POSIX shell: the desktop commands it calls, and Omarchy, are stand-ins.
 
 ## Choices so far
 - File browser: [Strata](https://github.com/lgse/strata) (Mike, 2026-10-04), installed and set as the file manager.

@@ -1,8 +1,16 @@
 #!/bin/sh
 # Append Gooarchy's flavorings (touchpad, file manager and browser keys) to the session's config.
+# On Omarchy, Super+Shift+F and Super+Shift+B stay Omarchy's (its file manager and browser), so
+# those two keys are left out; and this user's fragment of Scottland's override report is brought
+# up to date first, so the adapter's report (built after this) lists what the flavorings change.
 ini=/usr/share/gooarchy-flavorings/scottland.ini
 if [ "${1:-}" = --watch-paths ]; then
   echo "$ini"
   exit 0
 fi
-cat "$ini"
+if [ -d "${OMARCHY_PATH:-/usr/share/omarchy}" ]; then
+  gooarchy-flavorings-apply --override-report >&2 </dev/null
+  sed '/^# Strata is the file manager\./,/^command_browser = /d' "$ini"
+else
+  cat "$ini"
+fi
