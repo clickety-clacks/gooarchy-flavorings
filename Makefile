@@ -2,11 +2,10 @@
 #
 #   make install DESTDIR=<root>
 #
-# Each Watercolor Dream theme installs as its complete Omarchy theme directory, copied as it is in
-# themes/ with its links kept, plus the two files Gooarchy's scripts read: background.webp (the
-# background preview.webp links to) and ghostty, generated from the theme's colors. The installed
-# paths are fixed: the scripts refer to them directly. The themes' license file goes with the
-# package's licenses.
+# Each Watercolor Dream theme installs as its directory, copied as it is in themes/ with its links
+# kept, plus the two files Gooarchy's scripts read: background.webp (the background preview.webp
+# links to) and ghostty, generated from the theme's colors. Each theme's LICENSE also goes with the
+# package's licenses. The installed paths are fixed: the scripts refer to them directly.
 
 DESTDIR ?=
 THEME_NAMES = watercolor-dream-light watercolor-dream-dark
@@ -26,10 +25,10 @@ install:
 	install -Dm644 tmux/tmux.conf "$(DESTDIR)/etc/tmux.conf"
 	install -Dm644 profile.d/gooarchy-flavorings.sh "$(DESTDIR)/etc/profile.d/gooarchy-flavorings.sh"
 	install -Dm644 xdg/scottland-mimeapps.list "$(DESTDIR)/etc/xdg/scottland-mimeapps.list"
-	install -Dm644 themes/LICENSE "$(DESTDIR)/usr/share/licenses/gooarchy-flavorings/themes/LICENSE"
 	set -e; for theme in $(THEME_NAMES); do \
 	  from="themes/$$theme"; to="$(SHARE)/themes/$$theme"; \
 	  install -d "$$to"; cp -RP "$$from/." "$$to/"; \
+	  install -Dm644 "$$from/LICENSE" "$(DESTDIR)/usr/share/licenses/gooarchy-flavorings/themes/$$theme/LICENSE"; \
 	  install -Dm644 "$$(readlink -f "$$from/preview.webp")" "$$to/background.webp"; \
 	  python3 themes/ghostty-theme.py "$$from/colors.toml" >"$$to/ghostty"; chmod 644 "$$to/ghostty"; \
 	done

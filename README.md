@@ -22,8 +22,7 @@ came the same way from Scottland's `omarchy/themes/`.
 | `bin/gooarchy-theme` | Switch between the light and dark theme | `/usr/bin/gooarchy-theme` |
 | `bin/gooarchy-flavorings-apply` | Fill in per-user defaults, once each, only where nothing is set | `/usr/bin/gooarchy-flavorings-apply` |
 | `libexec/gooarchy-wallpaper` | The theme's wallpaper, following light and dark | `/usr/lib/gooarchy-flavorings/gooarchy-wallpaper` |
-| `themes/watercolor-dream-light/`, `watercolor-dream-dark/` | The Watercolor Dream themes as complete Omarchy theme directories, as Scottland had them | `/usr/share/gooarchy-flavorings/themes/<theme>/` as they are, with `background.webp` and `ghostty` added |
-| `themes/LICENSE` | Scottland's repository license, carried unchanged with the themes | `/usr/share/licenses/gooarchy-flavorings/themes/LICENSE` |
+| `themes/watercolor-dream-light/`, `watercolor-dream-dark/` | The Watercolor Dream themes as complete Omarchy theme directories, as Scottland had them, each with Scottland's repository license carried unchanged as `LICENSE` | `/usr/share/gooarchy-flavorings/themes/<theme>/` as they are, with `background.webp` and `ghostty` added; each `LICENSE` also at `/usr/share/licenses/gooarchy-flavorings/themes/<theme>/LICENSE` |
 | `themes/ghostty-theme.py` | Builds a Ghostty theme from a theme's `colors.toml` (at install) | not installed |
 | `tmux/tmux.conf`, `profile.d/`, `xdg/` | tmux titles, mosh titles, default apps | `/etc/tmux.conf`, `/etc/profile.d/`, `/etc/xdg/` |
 | `tests/flavorings-apply-test.py` | Tests `gooarchy-flavorings-apply` in throwaway home directories | not installed |
