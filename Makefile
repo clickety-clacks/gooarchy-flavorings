@@ -14,13 +14,17 @@ SCOTTLAND = $(DESTDIR)/usr/lib/scottland
 LICENSE_DIR = $(DESTDIR)/usr/share/licenses/gooarchy-flavorings
 
 .PHONY: install
-install:
+install: validate-sudoers
 	install -Dm644 scottland/flavorings.ini "$(SHARE)/scottland.ini"
 	install -Dm755 scottland/config.d/40-gooarchy-flavorings "$(SCOTTLAND)/config.d/40-gooarchy-flavorings"
 	install -Dm755 scottland/autostart.d/40-gooarchy-wallpaper "$(SCOTTLAND)/autostart.d/40-gooarchy-wallpaper"
 	install -Dm755 scottland/autostart.d/45-gooarchy-flavorings "$(SCOTTLAND)/autostart.d/45-gooarchy-flavorings"
 	install -Dm755 scottland/accent.d/20-gooarchy-theme "$(SCOTTLAND)/accent.d/20-gooarchy-theme"
 	install -Dm755 libexec/gooarchy-wallpaper "$(DESTDIR)/usr/lib/gooarchy-flavorings/gooarchy-wallpaper"
+	install -Dm755 libexec/gooarchy-theme-integrations "$(DESTDIR)/usr/lib/gooarchy-flavorings/gooarchy-theme-integrations"
+	install -Dm755 libexec/gooarchy-browser-policy "$(DESTDIR)/usr/lib/gooarchy-flavorings/gooarchy-browser-policy"
+	install -Dm440 etc/sudoers.d/90-gooarchy-browser-policy "$(DESTDIR)/etc/sudoers.d/90-gooarchy-browser-policy"
+	install -Dm644 LICENSES/omarchy-browser-policy-MIT.txt "$(DESTDIR)/usr/share/licenses/gooarchy-flavorings/omarchy-browser-policy-MIT.txt"
 	install -Dm755 bin/gooarchy-theme "$(DESTDIR)/usr/bin/gooarchy-theme"
 	install -Dm755 bin/gooarchy-flavorings-apply "$(DESTDIR)/usr/bin/gooarchy-flavorings-apply"
 	install -Dm644 tmux/tmux.conf "$(DESTDIR)/etc/tmux.conf"
@@ -33,3 +37,13 @@ install:
 	  install -Dm644 "$$(readlink -f "$$from/preview.webp")" "$$to/background.webp"; \
 	  python3 themes/ghostty-theme.py "$$from/colors.toml" >"$$to/ghostty"; chmod 644 "$$to/ghostty"; \
 	done
+
+.PHONY: validate-sudoers
+validate-sudoers:
+	visudo -cf etc/sudoers.d/90-gooarchy-browser-policy
+
+.PHONY: test
+test:
+	python3 tests/flavorings-apply-test.py
+	python3 tests/theme-integrations-test.py
+	bash -n libexec/gooarchy-browser-policy
