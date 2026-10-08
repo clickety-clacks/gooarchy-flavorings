@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Print the installed directory for the selected Gooarchy theme variant."""
+import os
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+REPOSITORY_THEMES = REPOSITORY_ROOT / "themes"
+THEME_DIRS = (REPOSITORY_THEMES if (REPOSITORY_ROOT / "Makefile").is_file()
+              else Path("/usr/share/gooarchy-flavorings/themes"))
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+SELECTION_FILE = CONFIG_HOME / "gooarchy" / "theme"
+DEFAULT_SLUG = "watercolor-dream"
+MODES = ("light", "dark")
+IMAGE_SUFFIXES = {".webp", ".png", ".jpg", ".jpeg"}
+SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+REQUIRED_KEYS = (
+    "accent", "background", "lighter_background", "foreground", "light_foreground",
+    "bright_foreground", "muted", "selection", "selection_foreground", "red", "green",
+    "yellow", "blue", "magenta", "cyan", "bright_red", "bright_green", "bright_yellow",
+    "bright_blue", "bright_magenta", "bright_cyan",
+)
+COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}\Z")
+
+
+def _portal_mode(run=subprocess.run):
+    command = [
+        "gdbus", "call", "--session", "--dest", "org.freedesktop.portal.Desktop",
+        "--object-path", "/org/freedesktop/portal/desktop", "--method",
+        "org.freedesktop.portal.Settings.Read", "org.freedesktop.appearance", "color-scheme",
+    ]
+    try:
+        result = run(command, capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    value = re.search(r"(?<![A-Za-z0-9_])([0-9]+)(?![A-Za-z0-9_])", result.stdout)
+    if value is None:
+        return None
+    return "light" if int(value.group(1)) == 2 else "dark"
+
+
+def current_mode(run=subprocess.run):
+    """Use the desktop portal, then GNOME, then the contract's dark fallback."""
+    portal = _portal_mode(run)
+    if portal is not None:
+        return portal
+    try:
+        result = run(
+            ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "dark"
+    if result.returncode != 0:
+        return "dark"
+    return "light" if "light" in result.stdout.lower() else "dark"
+
+
+def selected_slug(selection_file=SELECTION_FILE):
+    try:
+        with open(selection_file, encoding="utf-8") as source:
+            first = source.readline().strip()
+    except FileNotFoundError:
+        return DEFAULT_SLUG
+    except OSError as error:
+        print(f"gooarchy-theme-lookup: cannot read selection record: {error}", file=sys.stderr)
+        return DEFAULT_SLUG
+    return first or DEFAULT_SLUG
+
+
+def background_files(variant):
+    backgrounds = variant / "backgrounds"
+    if not backgrounds.is_dir():
+        return []
+    return sorted(
+        (path for path in backgrounds.iterdir()
+         if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES),
+        key=lambda path: os.fsencode(path.name),
+    )
+
+
+def validate_variant(variant, require_webp=True):
+    if not variant.is_dir():
+        return "variant directory is missing"
+    colors_path = variant / "colors.toml"
+    try:
+        with open(colors_path, "rb") as source:
+            colors = tomllib.load(source)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        return f"cannot read colors.toml: {error}"
+    for key in REQUIRED_KEYS:
+        value = colors.get(key)
+        if not isinstance(value, str) or COLOR_RE.fullmatch(value) is None:
+            return f"colors.toml key {key} must be a #rrggbb string"
+    try:
+        backgrounds = background_files(variant)
+    except OSError as error:
+        return f"cannot read backgrounds/: {error}"
+    if not backgrounds:
+        return "backgrounds/ has no supported image"
+    if require_webp and backgrounds[0].suffix.lower() != ".webp":
+        return f"first background {backgrounds[0].name} is not .webp"
+    return None
+
+
+def validate_theme(slug, theme_dirs=THEME_DIRS, require_webp=True):
+    if SLUG_RE.fullmatch(slug) is None:
+        return None, f"invalid theme slug {slug!r}"
+    variants = {}
+    for mode in MODES:
+        variant = theme_dirs / f"{slug}-{mode}"
+        error = validate_variant(variant, require_webp=require_webp)
+        if error:
+            return None, f"{variant.name}: {error}"
+        variants[mode] = variant
+    return variants, None
+
+
+def lookup_variant(mode, theme_dirs=THEME_DIRS, selection_file=SELECTION_FILE):
+    if mode not in MODES:
+        raise ValueError(f"unsupported mode {mode!r}")
+    slug = selected_slug(selection_file)
+    variants, error = validate_theme(slug, theme_dirs)
+    if error:
+        print(
+            f"gooarchy-theme-lookup: selected theme {slug!r} is invalid ({error}); "
+            f"using {DEFAULT_SLUG}",
+            file=sys.stderr,
+        )
+        variants, fallback_error = validate_theme(DEFAULT_SLUG, theme_dirs)
+        if fallback_error:
+            raise RuntimeError(f"default theme is invalid: {fallback_error}")
+    return variants[mode].absolute()
+
+
+def validate_catalogue(theme_dirs):
+    root = Path(theme_dirs)
+    if not root.is_dir():
+        print(f"gooarchy-theme-lookup: catalogue directory is missing: {root}", file=sys.stderr)
+        return 1
+    slugs = set()
+    try:
+        entries = list(root.iterdir())
+    except OSError as error:
+        print(f"gooarchy-theme-lookup: cannot read catalogue directory {root}: {error}", file=sys.stderr)
+        return 1
+    for entry in entries:
+        for mode in MODES:
+            suffix = f"-{mode}"
+            if entry.name.endswith(suffix):
+                slugs.add(entry.name[:-len(suffix)])
+    if not slugs:
+        print(f"gooarchy-theme-lookup: no catalogue variants in {root}", file=sys.stderr)
+        return 1
+    failures = 0
+    for slug in sorted(slugs, key=os.fsencode):
+        if SLUG_RE.fullmatch(slug) is None:
+            print(f"gooarchy-theme-lookup: invalid catalogue slug in {slug!r}", file=sys.stderr)
+            failures += 1
+            continue
+        for mode in MODES:
+            variant = root / f"{slug}-{mode}"
+            error = validate_variant(variant, require_webp=True)
+            if error:
+                print(f"gooarchy-theme-lookup: {variant.name}: {error}", file=sys.stderr)
+                failures += 1
+    return 1 if failures else 0
+
+
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    if len(args) == 2 and args[0] == "--validate-catalogue":
+        return validate_catalogue(args[1])
+    if len(args) == 2 and args[0] == "--first-background":
+        files = background_files(Path(args[1]))
+        if not files:
+            print(f"gooarchy-theme-lookup: no supported background in {args[1]}", file=sys.stderr)
+            return 1
+        if files[0].suffix.lower() != ".webp":
+            print(f"gooarchy-theme-lookup: first background {files[0].name} is not .webp", file=sys.stderr)
+            return 1
+        print(files[0].absolute())
+        return 0
+    if len(args) > 1 or (args and args[0] not in MODES):
+        print("usage: gooarchy-theme-lookup [light|dark]", file=sys.stderr)
+        return 2
+    mode = args[0] if args else current_mode()
+    try:
+        print(lookup_variant(mode))
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"gooarchy-theme-lookup: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -29,3 +29,8 @@ Flavorings does not rewrite the existing per-user frame preference.
 On Omarchy, the existing Omarchy marker makes both integrations inert so Omarchy retains its own
 Strata and browser appearance. The policy-writer design derives from Omarchy's MIT-licensed browser
 policy integration; its copyright and permission notice ship under `LICENSES/`.
+
+## Ghostty theme location
+
+On the adapter version, Ghostty reads from Omarchy. On Gooarchy, it needs to read from the
+Scottland equivalent.

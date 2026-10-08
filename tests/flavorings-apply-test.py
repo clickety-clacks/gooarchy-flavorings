@@ -21,10 +21,13 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+from pathlib import Path
 import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import redirect_stderr
+from io import StringIO
 
 repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tool = os.path.join(repo, "bin", "gooarchy-flavorings-apply")
@@ -137,6 +140,192 @@ def mode(path):
     return stat.S_IMODE(os.stat(path).st_mode)
 
 
+def load_module(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+lookup = load_module("theme_lookup", os.path.join(repo, "libexec", "gooarchy-theme-lookup"))
+refresh = load_module("theme_refresh", os.path.join(repo, "libexec", "gooarchy-theme-refresh"))
+
+
+def completed(command, returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+
+# The resolver is the only reader of the theme selection record and follows portal precedence.
+with tempfile.TemporaryDirectory() as temp:
+    empty_selection = Path(temp) / "missing"
+    expect("an absent selection record defaults to Watercolor Dream",
+           lookup.selected_slug(empty_selection) == "watercolor-dream")
+    empty_selection.write_text("  \n")
+    expect("an empty selection record defaults to Watercolor Dream",
+           lookup.selected_slug(empty_selection) == "watercolor-dream")
+    selected = Path(temp) / "theme"
+    selected.write_text("gone\nlight\n")
+    warning = StringIO()
+    with redirect_stderr(warning):
+        fallback = lookup.lookup_variant("dark", Path(repo) / "themes", selected)
+    expect("an invalid selection warns and falls back without changing the record",
+           fallback == (Path(repo) / "themes" / "watercolor-dream-dark").resolve()
+           and "gone" in warning.getvalue() and selected.read_text() == "gone\nlight\n")
+
+    calls = []
+
+    def portal_light(command, **kwargs):
+        calls.append(command[0])
+        if command[0] == "gdbus":
+            return completed(command, stdout="(uint32 2,)")
+        return completed(command, stdout="prefer-dark")
+
+    expect("portal light mode takes precedence over GNOME dark mode",
+           lookup.current_mode(portal_light) == "light" and calls == ["gdbus"])
+
+    def portal_dark(command, **kwargs):
+        if command[0] == "gdbus":
+            return completed(command, stdout="(uint32 1,)")
+        return completed(command, stdout="prefer-light")
+
+    expect("a portal value other than 2 means dark",
+           lookup.current_mode(portal_dark) == "dark")
+
+    def no_portal_gnome_light(command, **kwargs):
+        return completed(command, 1) if command[0] == "gdbus" else completed(command, stdout="prefer-light")
+
+    expect("GSettings light is used when the portal does not answer",
+           lookup.current_mode(no_portal_gnome_light) == "light")
+
+    def no_desktop(command, **kwargs):
+        raise FileNotFoundError(command[0])
+
+    expect("dark is the fallback when neither mode source is readable",
+           lookup.current_mode(no_desktop) == "dark")
+    expect("the checked-in catalogue satisfies the pair and first-WebP rule",
+           lookup.validate_catalogue(Path(repo) / "themes") == 0)
+
+    temporary_catalogue = Path(temp) / "themes"
+    required = "\n".join(f'{key} = "#123456"' for key in lookup.REQUIRED_KEYS) + "\n"
+    for suffix in ("light", "dark"):
+        variant = temporary_catalogue / f"plain-{suffix}"
+        (variant / "backgrounds").mkdir(parents=True)
+        (variant / "colors.toml").write_text(required)
+        (variant / "backgrounds" / "z.webp").write_bytes(b"z")
+        (variant / "backgrounds" / "a.webp").write_bytes(b"a")
+    selected = Path(temp) / "selected-theme"
+    selected.write_text("plain\n")
+    expect("a newly added valid theme pair needs no integration-specific catalogue entry",
+           lookup.validate_theme("plain", temporary_catalogue)[1] is None
+           and lookup.lookup_variant("dark", temporary_catalogue, selected)
+           == (temporary_catalogue / "plain-dark").resolve()
+           and selected.read_text() == "plain\n")
+    expect("the first background is selected by byte order of its filename",
+           lookup.background_files(temporary_catalogue / "plain-light")[0].name == "a.webp")
+
+    temporary_catalogue = Path(temp) / "invalid-themes"
+    for suffix in ("light", "dark"):
+        variant = temporary_catalogue / f"broken-{suffix}"
+        (variant / "backgrounds").mkdir(parents=True)
+        (variant / "colors.toml").write_text(required)
+        (variant / "backgrounds" / "a.png").write_bytes(b"png")
+        (variant / "backgrounds" / "z.webp").write_bytes(b"webp")
+    diagnostics = StringIO()
+    with redirect_stderr(diagnostics):
+        invalid = lookup.validate_catalogue(temporary_catalogue)
+    expect("catalogue validation names a variant whose first background is not WebP",
+           invalid == 1 and "broken-light" in diagnostics.getvalue()
+           and "first background a.png is not .webp" in diagnostics.getvalue())
+
+
+# The refresh replaces both links atomically and leaves its reserved location with exactly two links.
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    current = root / "config" / "gooarchy" / "current-theme"
+    lookup_path = Path(repo) / "libexec" / "gooarchy-theme-lookup"
+    selection = root / "config" / "gooarchy" / "theme"
+    selection.parent.mkdir(parents=True)
+    selection.write_text("plain\n")
+    targets = {"light": "/themes/plain-light", "dark": "/themes/plain-dark"}
+    calls = []
+
+    def fake_lookup(command, **kwargs):
+        calls.append(tuple(command))
+        return completed(command, stdout=targets[command[1]] + "\n")
+
+    refresh.refresh(current, lookup_path, fake_lookup)
+    expect("refresh creates the selected light/dark links and no other entry",
+           sorted(path.name for path in current.iterdir()) == ["dark", "light"]
+           and os.readlink(current / "light") == targets["light"]
+           and os.readlink(current / "dark") == targets["dark"])
+    targets.update(light="/themes/other-light", dark="/themes/other-dark")
+    real_replace = os.replace
+    observed_destinations = []
+
+    def observed_replace(source, destination):
+        destination = Path(destination)
+        if destination.parent == current:
+            observed_destinations.append(destination.exists())
+        return real_replace(source, destination)
+
+    os.replace = observed_replace
+    try:
+        refresh.refresh(current, lookup_path, fake_lookup)
+    finally:
+        os.replace = real_replace
+    expect("refresh atomically replaces each existing link from lookup output",
+           os.readlink(current / "light") == targets["light"]
+           and os.readlink(current / "dark") == targets["dark"]
+           and sorted(path.name for path in current.iterdir()) == ["dark", "light"]
+           and not [path for path in current.parent.iterdir() if path.name.endswith(".tmp")]
+           and observed_destinations == [True, True]
+           and selection.read_text() == "plain\n")
+
+# make install copies catalogue entries verbatim and derives files without a second checkout.
+with tempfile.TemporaryDirectory() as destdir:
+    result = subprocess.run(["make", "install", f"DESTDIR={destdir}"], cwd=repo,
+                            capture_output=True, text=True)
+    expect("make install succeeds into an isolated DESTDIR", result.returncode == 0,
+           result.stderr.strip()[-300:])
+    if result.returncode == 0:
+        installed = Path(destdir) / "usr/share/gooarchy-flavorings/themes"
+        for source in sorted((Path(repo) / "themes").glob("*-light")) + sorted((Path(repo) / "themes").glob("*-dark")):
+            target = installed / source.name
+            exact = target.is_dir()
+            for source_file in source.rglob("*"):
+                relative = source_file.relative_to(source)
+                installed_file = target / relative
+                if source_file.is_symlink():
+                    exact = exact and installed_file.is_symlink() and os.readlink(source_file) == os.readlink(installed_file)
+                elif source_file.is_file():
+                    exact = exact and installed_file.is_file() and source_file.read_bytes() == installed_file.read_bytes()
+            first = lookup.background_files(source)[0]
+            exact = exact and (target / "background.webp").read_bytes() == first.read_bytes()
+            exact = exact and (target / "ghostty").is_file()
+            expect(f"{source.name} installs byte-for-byte with derived files", exact)
+
+
+# Setup writes only the current-theme Ghostty line to a new config and leaves a saved config alone.
+apply_module = load_module("flavorings_apply", tool)
+with tempfile.TemporaryDirectory() as temp:
+    config = Path(temp) / "config"
+    current = config / "gooarchy" / "current-theme"
+    current.mkdir(parents=True)
+    for variant in ("light", "dark"):
+        os.symlink(f"/themes/plain-{variant}", current / variant)
+    apply_module.CONFIG = config
+    apply_module.STATE = Path(temp) / "state" / "gooarchy"
+    expect("new Ghostty config uses the absolute current-theme pair",
+           apply_module.ghostty()
+           and (config / "ghostty/config").read_text() ==
+           f"# Gooarchy flavorings: follow the selected theme and desktop mode.\n"
+           f"theme = light:{current}/light/ghostty,dark:{current}/dark/ghostty\n")
+    saved = config / "ghostty/config"
+    saved.write_text("# user settings\nfont-size = 13\n")
+    previous = saved.read_bytes()
+    expect("an existing Ghostty config stays byte-for-byte unchanged",
+           apply_module.ghostty() and saved.read_bytes() == previous)
 with tempfile.TemporaryDirectory() as home:
     os.umask(0o022)
     claude = os.path.join(home, ".claude.json")
