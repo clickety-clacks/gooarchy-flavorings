@@ -135,5 +135,61 @@ with tempfile.TemporaryDirectory() as home:
     data = json.load(open(os.path.join(home, ".claude.json")))
     expect("concurrent runs leave valid files", data == {"keep": 1, "preferredNotifChannel": "terminal_bell"}, data)
 
+# Stage one package install in a throwaway root. Source theme entries must survive the copy
+# unchanged; only the generated background.webp and ghostty files may be added.
+def theme_snapshot(root):
+    entries = {}
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for name in sorted(directories + files):
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, root)
+            if os.path.islink(path):
+                entries[relative] = ("symlink", os.readlink(path))
+            elif os.path.isdir(path):
+                entries[relative] = ("directory",)
+            else:
+                with open(path, "rb") as stream:
+                    entries[relative] = ("file", stream.read())
+    return entries
+
+
+with tempfile.TemporaryDirectory() as stage:
+    install = subprocess.run(
+        ["make", "install", f"DESTDIR={stage}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    expect("package install succeeds in a throwaway root", install.returncode == 0,
+           install.stderr.strip()[-240:])
+    license_dir = os.path.join(stage, "usr", "share", "licenses", "gooarchy-flavorings")
+    notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
+    notice = os.path.join(license_dir, notice_name)
+    installed_license_names = sorted(os.listdir(license_dir)) if os.path.isdir(license_dir) else []
+    expect("the license directory contains only the theme-scoped notice",
+           installed_license_names == [notice_name], installed_license_names)
+    source_notice = os.path.join(repo, "licenses", notice_name)
+    installed_notice = open(notice, "rb").read() if os.path.isfile(notice) else None
+    expected_notice = open(source_notice, "rb").read()
+    expect("the installed CC0 legal text is unchanged",
+           installed_notice is not None and installed_notice == expected_notice)
+    themes_match = True
+    theme_details = []
+    for theme in ("watercolor-dream-light", "watercolor-dream-dark"):
+        source_theme = os.path.join(repo, "themes", theme)
+        installed_theme = os.path.join(stage, "usr", "share", "gooarchy-flavorings", "themes", theme)
+        source_entries = theme_snapshot(source_theme)
+        installed_entries = theme_snapshot(installed_theme) if os.path.isdir(installed_theme) else {}
+        extra_entries = set(installed_entries) - set(source_entries)
+        expected_generated = {"background.webp", "ghostty"} - set(source_entries)
+        generated_present = all(os.path.isfile(os.path.join(installed_theme, item))
+                                for item in ("background.webp", "ghostty"))
+        same = (generated_present
+                and all(installed_entries.get(path) == entry for path, entry in source_entries.items())
+                and extra_entries == expected_generated)
+        if not same:
+            themes_match = False
+            theme_details.append(theme)
+    expect("installed Watercolor Dream theme entries remain byte-identical to source",
+           themes_match, theme_details)
+
 print(f"{'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)

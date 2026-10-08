@@ -11,6 +11,7 @@ DESTDIR ?=
 THEME_NAMES = watercolor-dream-light watercolor-dream-dark
 SHARE = $(DESTDIR)/usr/share/gooarchy-flavorings
 SCOTTLAND = $(DESTDIR)/usr/lib/scottland
+LICENSE_DIR = $(DESTDIR)/usr/share/licenses/gooarchy-flavorings
 
 .PHONY: install
 install:
@@ -25,6 +26,7 @@ install:
 	install -Dm644 tmux/tmux.conf "$(DESTDIR)/etc/tmux.conf"
 	install -Dm644 profile.d/gooarchy-flavorings.sh "$(DESTDIR)/etc/profile.d/gooarchy-flavorings.sh"
 	install -Dm644 xdg/scottland-mimeapps.list "$(DESTDIR)/etc/xdg/scottland-mimeapps.list"
+	install -Dm644 licenses/CC0-1.0-Watercolor-Dream-themes-only.txt "$(LICENSE_DIR)/CC0-1.0-Watercolor-Dream-themes-only.txt"
 	set -e; for theme in $(THEME_NAMES); do \
 	  from="themes/$$theme"; to="$(SHARE)/themes/$$theme"; \
 	  install -d "$$to"; cp -RP "$$from/." "$$to/"; \
