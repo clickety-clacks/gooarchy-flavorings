@@ -38,3 +38,18 @@ Mike's exact ruling (`dr_f74a125b`):
 
 Accordingly, Ghostty reads from Omarchy on the adapter version and from the Scottland equivalent
 on Gooarchy.
+
+## Text size, feature 12
+
+Date: 2026-10-07
+
+Decision: `dr_97bef851-e1af-4f66-a438-940161b811e2`
+
+Spec: `gooarchy-text-size` (SHA-256 `500a753b13cfaad62d7cda5e6c713d17d13ea3f617d57ff9530ba4de8bdf8223`)
+
+Work item: `wi_b7a5e451`
+
+Mike ruled “all” on the held features, including feature 12: one text size across the shell, GTK
+apps and terminals. For flavorings, the value is the user's existing
+`org.gnome.desktop.interface text-scaling-factor`; flavorings sets no default and writes no size
+value or per-app copy. Core owns the command that changes the key and pushes it into running apps.
