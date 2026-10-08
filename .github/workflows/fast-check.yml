@@ -1,0 +1,22 @@
+name: fast-check
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test flavorings setup
+        run: python3 tests/flavorings-apply-test.py
+      - name: Stage package install
+        run: |
+          make install DESTDIR="$RUNNER_TEMP/flavorings-stage"
+          test -f "$RUNNER_TEMP/flavorings-stage/usr/share/gooarchy-flavorings/themes/watercolor-dream-light/ghostty"
+          test -f "$RUNNER_TEMP/flavorings-stage/usr/share/gooarchy-flavorings/themes/watercolor-dream-dark/ghostty"
