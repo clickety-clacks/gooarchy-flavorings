@@ -282,6 +282,44 @@ with tempfile.TemporaryDirectory() as temp:
            and observed_destinations == [True, True]
            and selection.read_text() == "plain\n")
 
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    current = root / "config" / "gooarchy" / "current-theme"
+    current.mkdir(parents=True)
+    user_file = current / "notes"
+    user_file.write_text("keep this file\n")
+
+    def valid_lookup(command, **kwargs):
+        return completed(command, stdout=f"/themes/plain-{command[1]}\n")
+
+    try:
+        refresh.refresh(current, Path(repo) / "libexec" / "gooarchy-theme-lookup", valid_lookup)
+        refused = False
+    except RuntimeError as error:
+        refused = "unexpected current-theme entry: notes" in str(error)
+    expect("refresh refuses unexpected current-theme contents without changing them",
+           refused and user_file.read_text() == "keep this file\n"
+           and not (current / "light").exists() and not (current / "dark").exists())
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    current = root / "config" / "gooarchy" / "current-theme"
+    calls = []
+
+    def incomplete_lookup(command, **kwargs):
+        calls.append(command[1])
+        if command[1] == "dark":
+            return completed(command, returncode=1, stderr="catalogue unavailable")
+        return completed(command, stdout="/themes/plain-light\n")
+
+    try:
+        refresh.refresh(current, Path(repo) / "libexec" / "gooarchy-theme-lookup", incomplete_lookup)
+        refused = False
+    except RuntimeError as error:
+        refused = "theme lookup failed for dark" in str(error)
+    expect("refresh resolves both targets before creating its location",
+           refused and calls == ["light", "dark"] and not current.parent.exists())
+
 # make install copies catalogue entries verbatim and derives files without a second checkout.
 with tempfile.TemporaryDirectory() as destdir:
     result = subprocess.run(["make", "install", f"DESTDIR={destdir}"], cwd=repo,
