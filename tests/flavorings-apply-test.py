@@ -238,6 +238,18 @@ with tempfile.TemporaryDirectory() as temp:
            invalid == 1 and "broken-light" in diagnostics.getvalue()
            and "first background a.png is not .webp" in diagnostics.getvalue())
 
+    missing_pair_catalogue = Path(temp) / "missing-partner-themes"
+    orphan = missing_pair_catalogue / "orphan-light"
+    (orphan / "backgrounds").mkdir(parents=True)
+    (orphan / "colors.toml").write_text(required)
+    (orphan / "backgrounds" / "a.webp").write_bytes(b"webp")
+    diagnostics = StringIO()
+    with redirect_stderr(diagnostics):
+        invalid = lookup.validate_catalogue(missing_pair_catalogue)
+    expect("catalogue validation names a missing partner variant",
+           invalid == 1 and "orphan-dark" in diagnostics.getvalue()
+           and "variant directory is missing" in diagnostics.getvalue())
+
 
 # The refresh replaces both links atomically and leaves its reserved location with exactly two links.
 with tempfile.TemporaryDirectory() as temp:
@@ -266,7 +278,9 @@ with tempfile.TemporaryDirectory() as temp:
     def observed_replace(source, destination):
         destination = Path(destination)
         if destination.parent == current:
-            observed_destinations.append(destination.exists())
+            # The links intentionally point outside this fixture, so exists() follows them and
+            # reports False. is_symlink() observes the existing link entry itself.
+            observed_destinations.append(destination.is_symlink())
         return real_replace(source, destination)
 
     os.replace = observed_replace
@@ -362,8 +376,14 @@ with tempfile.TemporaryDirectory() as temp:
     saved = config / "ghostty/config"
     saved.write_text("# user settings\nfont-size = 13\n")
     previous = saved.read_bytes()
+    report = StringIO()
+    with redirect_stderr(report):
+        left_alone = apply_module.ghostty()
     expect("an existing Ghostty config stays byte-for-byte unchanged",
-           apply_module.ghostty() and saved.read_bytes() == previous)
+           left_alone and saved.read_bytes() == previous)
+    expect("a saved Ghostty config without a theme suggests the current-theme line",
+           f"for Gooarchy's theme, add: theme = light:{current}/light/ghostty,"
+           f"dark:{current}/dark/ghostty" in report.getvalue())
 with tempfile.TemporaryDirectory() as home:
     os.umask(0o022)
     claude = os.path.join(home, ".claude.json")
