@@ -9,8 +9,9 @@ Covered: existing private files keep mode 0600 (and their contents); new private
 explicitly set color scheme (even "default") is kept; an interrupted write leaves the old file and
 no temporary file; two runs at once leave valid files. The package install places the unchanged
 scoped notice at its expected path and preserves installed theme entries verbatim to their source.
-Both setup/theme Sunlight notices explain that manual picks hold until the next transition and that
-turning Sunlight off is only for keeping one mode permanently.
+Both setup/theme Sunlight notices say a manual theme pick leaves Sunlight on, holds through periodic
+checks, and changes only at the next scheduled transition; turning Sunlight off keeps one mode
+permanently.
 """
 import importlib.machinery
 import importlib.util
@@ -79,11 +80,11 @@ with tempfile.TemporaryDirectory() as home:
     expect("no temporary files left", not [n for n, _, fs in os.walk(home) for f in fs if f.endswith(".gooarchy")])
     expect("an unset color scheme gets Watercolor Dream light",
            "set org.gnome.desktop.interface color-scheme prefer-light" in open(os.path.join(home, "gsettings.log")).read())
-    expect("Sunlight-on setup note says manual picks hold until sunrise or sunset",
-           "a mode you pick manually holds until the next sunrise or sunset" in r.stdout
-           and "when Sunlight switches it" in r.stdout
-           and "only if you want to keep one mode permanently" in r.stdout
-           and "every few seconds" not in r.stdout, r.stdout)
+    expect("Sunlight-on setup note keeps Sunlight enabled through periodic checks",
+           "schedule stays on after a manual theme pick" in r.stdout
+           and "keeping that choice through periodic checks" in r.stdout
+           and "changing it only at the next scheduled sunrise or sunset" in r.stdout
+           and "only if you want to keep one mode permanently" in r.stdout, r.stdout)
 
 with tempfile.TemporaryDirectory() as home:
     real = os.path.join(home, "dotfiles-claude.json")
@@ -264,11 +265,11 @@ def gsettings_value(home):
 with tempfile.TemporaryDirectory() as home:
     r = theme_run(home, "light", solar="[solar]\nenabled = true\n")
     expect("light still sets prefer-light", gsettings_value(home) == "prefer-light", r.stdout + r.stderr)
-    expect("Sunlight-on theme note says manual picks hold until transition",
-           "a mode you pick manually holds until the next sunrise or sunset" in r.stderr
-           and "when Sunlight switches it" in r.stderr
-           and "only if you want to keep one mode permanently" in r.stderr
-           and "every few seconds" not in r.stderr, r.stderr)
+    expect("Sunlight-on theme note keeps Sunlight enabled through periodic checks",
+           "schedule stays on after a manual theme pick" in r.stderr
+           and "keeping that choice through periodic checks" in r.stderr
+           and "changing it only at the next scheduled sunrise or sunset" in r.stderr
+           and "only if you want to keep one mode permanently" in r.stderr, r.stderr)
 
 with tempfile.TemporaryDirectory() as home:
     r = theme_run(home, "dark", solar="[solar]\nenabled = true\n")

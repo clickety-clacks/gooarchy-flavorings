@@ -17,7 +17,7 @@ sunlight() {
   case ${value:-true} in true | yes | 1 | on) return 0 ;; *) return 1 ;; esac
 }
 warn() {
-  sunlight && echo "Note: Scottland's Sunlight schedule is on; a mode you pick manually holds until the next sunrise or sunset, when Sunlight switches it. Turn it off in Scottland Settings > Sunlight only if you want to keep one mode permanently." >&2
+  sunlight && echo "Note: Scottland's Sunlight schedule stays on after a manual theme pick, keeping that choice through periodic checks and changing it only at the next scheduled sunrise or sunset. Turn it off in Scottland Settings > Sunlight only if you want to keep one mode permanently." >&2
   return 0
 }
 case ${1:-} in
