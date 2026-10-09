@@ -7,7 +7,9 @@ commands it calls (gsettings, dconf, xdg-user-dirs-update, pgrep). No desktop, n
 Covered: existing private files keep mode 0600 (and their contents); new private files are created
 0600; a symlinked config is left alone and reported; an app that's running is deferred; an
 explicitly set color scheme (even "default") is kept; an interrupted write leaves the old file and
-no temporary file; two runs at once leave valid files.
+no temporary file; two runs at once leave valid files. A fresh main install is compared with the
+candidate install so only the scoped notice is added and baseline paths keep their modes, bytes and
+link targets; installed theme entries are also checked against their source.
 """
 import importlib.machinery
 import importlib.util
@@ -135,60 +137,162 @@ with tempfile.TemporaryDirectory() as home:
     data = json.load(open(os.path.join(home, ".claude.json")))
     expect("concurrent runs leave valid files", data == {"keep": 1, "preferredNotifChannel": "terminal_bell"}, data)
 
-# Stage one package install in a throwaway root. Source theme entries must survive the copy
-# unchanged; only the generated background.webp and ghostty files may be added.
-def theme_snapshot(root):
+# Snapshot paths without following symlinks. Comparing these tuples checks installed modes,
+# file bytes and symlink targets, as well as file types and directory modes.
+def tree_snapshot(root):
     entries = {}
     for directory, directories, files in os.walk(root, followlinks=False):
         for name in sorted(directories + files):
             path = os.path.join(directory, name)
             relative = os.path.relpath(path, root)
+            metadata = os.lstat(path)
+            entry_mode = stat.S_IMODE(metadata.st_mode)
             if os.path.islink(path):
-                entries[relative] = ("symlink", os.readlink(path))
-            elif os.path.isdir(path):
-                entries[relative] = ("directory",)
-            else:
+                entries[relative] = ("symlink", entry_mode, os.readlink(path))
+            elif stat.S_ISDIR(metadata.st_mode):
+                entries[relative] = ("directory", entry_mode)
+            elif stat.S_ISREG(metadata.st_mode):
                 with open(path, "rb") as stream:
-                    entries[relative] = ("file", stream.read())
+                    entries[relative] = ("file", entry_mode, stream.read())
+            else:
+                entries[relative] = ("other", entry_mode, stat.S_IFMT(metadata.st_mode))
     return entries
 
 
-with tempfile.TemporaryDirectory() as stage:
-    install = subprocess.run(
+# Compare fresh installs of current main and this candidate in separate throwaway roots.
+def install_package(source, stage):
+    return subprocess.run(
         ["make", "install", f"DESTDIR={stage}"],
+        cwd=source, capture_output=True, text=True,
+    )
+
+
+with tempfile.TemporaryDirectory() as scratch:
+    baseline_source = os.path.join(scratch, "baseline-source")
+    baseline_stage = os.path.join(scratch, "baseline-stage")
+    candidate_stage = os.path.join(scratch, "candidate-stage")
+    os.makedirs(baseline_source)
+
+    fetch = subprocess.run(
+        ["git", "fetch", "--no-tags", "--depth=1", "origin", "refs/heads/main"],
         cwd=repo, capture_output=True, text=True,
     )
-    expect("package install succeeds in a throwaway root", install.returncode == 0,
-           install.stderr.strip()[-240:])
-    license_dir = os.path.join(stage, "usr", "share", "licenses", "gooarchy-flavorings")
+    expect("fetch current main for the baseline install", fetch.returncode == 0,
+           (fetch.stderr or fetch.stdout).strip()[-240:])
+
+    baseline_ready = fetch.returncode == 0
+    baseline_commit = ""
+    if baseline_ready:
+        revision = subprocess.run(
+            ["git", "rev-parse", "FETCH_HEAD"], cwd=repo, capture_output=True, text=True,
+        )
+        baseline_ready = revision.returncode == 0
+        expect("identify the fetched main commit", baseline_ready,
+               (revision.stderr or revision.stdout).strip()[-240:])
+        if baseline_ready:
+            baseline_commit = revision.stdout.strip()
+            tree = subprocess.run(
+                ["git", "rev-parse", f"{baseline_commit}^{{tree}}"],
+                cwd=repo, capture_output=True, text=True,
+            )
+            baseline_ready = tree.returncode == 0
+            expect("identify the fetched main tree", baseline_ready,
+                   (tree.stderr or tree.stdout).strip()[-240:])
+            if baseline_ready:
+                print(f"BASELINE main {baseline_commit} tree {tree.stdout.strip()}")
+
+    if baseline_ready:
+        archive = subprocess.run(
+            ["git", "archive", "--format=tar", baseline_commit],
+            cwd=repo, capture_output=True,
+        )
+        expect("archive the fetched main source", archive.returncode == 0,
+               (archive.stderr or archive.stdout).decode(errors="replace")[-240:])
+        if archive.returncode == 0:
+            extract = subprocess.run(
+                ["tar", "-xf", "-", "-C", baseline_source],
+                input=archive.stdout, capture_output=True,
+            )
+            baseline_ready = extract.returncode == 0
+            expect("extract the fetched main source", baseline_ready,
+                   (extract.stderr or extract.stdout).decode(errors="replace")[-240:])
+        else:
+            baseline_ready = False
+
+    baseline_install = install_package(baseline_source, baseline_stage) if baseline_ready else None
+    baseline_installed = baseline_install is not None and baseline_install.returncode == 0
+    expect("fresh main package install succeeds in DESTDIR", baseline_installed,
+           ((baseline_install.stderr or baseline_install.stdout).strip()[-240:]
+            if baseline_install else "baseline source was unavailable"))
+
+    candidate_install = install_package(repo, candidate_stage)
+    candidate_installed = candidate_install.returncode == 0
+    expect("candidate package install succeeds in DESTDIR", candidate_installed,
+           (candidate_install.stderr or candidate_install.stdout).strip()[-240:])
+
     notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
-    notice = os.path.join(license_dir, notice_name)
-    installed_license_names = sorted(os.listdir(license_dir)) if os.path.isdir(license_dir) else []
-    expect("the license directory contains only the theme-scoped notice",
-           installed_license_names == [notice_name], installed_license_names)
+    notice_path = os.path.join("usr", "share", "licenses", "gooarchy-flavorings", notice_name)
     source_notice = os.path.join(repo, "licenses", notice_name)
-    installed_notice = open(notice, "rb").read() if os.path.isfile(notice) else None
     expected_notice = open(source_notice, "rb").read()
-    expect("the installed CC0 legal text is unchanged",
-           installed_notice is not None and installed_notice == expected_notice)
+
+    if baseline_installed and candidate_installed:
+        baseline_entries = tree_snapshot(baseline_stage)
+        candidate_entries = tree_snapshot(candidate_stage)
+        changed_baseline = sorted(
+            path for path, entry in baseline_entries.items()
+            if candidate_entries.get(path) != entry
+        )
+        added = set(candidate_entries) - set(baseline_entries)
+        added_files = {path for path in added if candidate_entries[path][0] != "directory"}
+        added_directories = {path for path in added if candidate_entries[path][0] == "directory"}
+
+        required_notice_directories = set()
+        parent = os.path.dirname(notice_path)
+        while parent:
+            if parent not in baseline_entries:
+                required_notice_directories.add(parent)
+            parent = os.path.dirname(parent)
+
+        expect("candidate adds only the scoped notice to installed file paths",
+               added_files == {notice_path} and added_directories == required_notice_directories,
+               {"added_files": sorted(added_files),
+                "added_directories": sorted(added_directories),
+                "required_notice_directories": sorted(required_notice_directories)})
+        expect("every baseline installed path keeps its mode, bytes, type and link target",
+               not changed_baseline, changed_baseline[:20])
+
+        installed_notice = candidate_entries.get(notice_path)
+        expect("the installed CC0 legal text is unchanged and mode 0644",
+               installed_notice == ("file", 0o644, expected_notice))
+    else:
+        expect("candidate adds only the scoped notice to installed file paths", False,
+               "baseline or candidate DESTDIR install did not complete")
+        expect("every baseline installed path keeps its mode, bytes, type and link target", False,
+               "baseline or candidate DESTDIR install did not complete")
+        expect("the installed CC0 legal text is unchanged and mode 0644", False,
+               "candidate DESTDIR install did not complete")
+
     themes_match = True
     theme_details = []
     for theme in ("watercolor-dream-light", "watercolor-dream-dark"):
         source_theme = os.path.join(repo, "themes", theme)
-        installed_theme = os.path.join(stage, "usr", "share", "gooarchy-flavorings", "themes", theme)
-        source_entries = theme_snapshot(source_theme)
-        installed_entries = theme_snapshot(installed_theme) if os.path.isdir(installed_theme) else {}
+        installed_theme = os.path.join(candidate_stage, "usr", "share", "gooarchy-flavorings", "themes", theme)
+        source_entries = tree_snapshot(source_theme)
+        installed_entries = tree_snapshot(installed_theme) if os.path.isdir(installed_theme) else {}
         extra_entries = set(installed_entries) - set(source_entries)
         expected_generated = {"background.webp", "ghostty"} - set(source_entries)
-        generated_present = all(os.path.isfile(os.path.join(installed_theme, item))
+        generated_present = all(installed_entries.get(item, (None,))[0] == "file"
                                 for item in ("background.webp", "ghostty"))
-        same = (generated_present
-                and all(installed_entries.get(path) == entry for path, entry in source_entries.items())
+        changed_entries = [path for path, entry in source_entries.items()
+                           if installed_entries.get(path) != entry]
+        same = (generated_present and not changed_entries
                 and extra_entries == expected_generated)
         if not same:
             themes_match = False
-            theme_details.append(theme)
-    expect("installed Watercolor Dream theme entries remain byte-identical to source",
+            theme_details.append({"theme": theme,
+                                  "changed": changed_entries[:10],
+                                  "extra": sorted(extra_entries)})
+    expect("installed Watercolor Dream theme entries remain verbatim to source",
            themes_match, theme_details)
 
 print(f"{'all passed' if not failures else f'{failures} failed'}")
