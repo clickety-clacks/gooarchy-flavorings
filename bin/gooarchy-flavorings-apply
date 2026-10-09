@@ -143,9 +143,9 @@ def color_scheme():
         gsettings("set", "org.gnome.desktop.interface", "color-scheme", "prefer-light")
         say("Set the desktop to Watercolor Dream light (gooarchy-theme dark switches).")
     if sunlight_enabled():
-        say("Scottland's Sunlight schedule is on: it switches between light and dark with the sun once it "
-            "knows where you are (GeoClue, saved coordinates, or an IP lookup). Turn it off in Scottland "
-            "Settings > Sunlight to keep one mode.")
+        say("Scottland's Sunlight schedule is on: a mode you pick manually holds until the next sunrise "
+            "or sunset, when Sunlight switches it. Turn it off in Scottland Settings > Sunlight only if "
+            "you want to keep one mode permanently.")
     return True
 
 

@@ -9,8 +9,8 @@ Covered: existing private files keep mode 0600 (and their contents); new private
 0600; a symlinked config is left alone and reported; an app that's running is deferred; an
 explicitly set color scheme (even "default") is kept; an interrupted write leaves the old file and
 no temporary file; two runs at once leave valid files; gooarchy-theme's light/dark/toggle set the
-same color-scheme values as before, and its Sunlight note's text and presence follow
-~/.config/scottland/solar.ini.
+same color-scheme values as before, and both setup/theme Sunlight notices explain transition-only
+manual picks and that disabling Sunlight keeps one mode permanently.
 """
 import importlib.machinery
 import importlib.util
@@ -79,6 +79,11 @@ with tempfile.TemporaryDirectory() as home:
     expect("no temporary files left", not [n for n, _, fs in os.walk(home) for f in fs if f.endswith(".gooarchy")])
     expect("an unset color scheme gets Watercolor Dream light",
            "set org.gnome.desktop.interface color-scheme prefer-light" in open(os.path.join(home, "gsettings.log")).read())
+    expect("Sunlight-on setup note says manual picks hold until sunrise or sunset",
+           "a mode you pick manually holds until the next sunrise or sunset" in r.stdout
+           and "when Sunlight switches it" in r.stdout
+           and "only if you want to keep one mode permanently" in r.stdout
+           and "every few seconds" not in r.stdout, r.stdout)
 
 with tempfile.TemporaryDirectory() as home:
     real = os.path.join(home, "dotfiles-claude.json")
@@ -177,9 +182,11 @@ def gsettings_value(home):
 with tempfile.TemporaryDirectory() as home:
     r = theme_run(home, "light", solar="[solar]\nenabled = true\n")
     expect("light still sets prefer-light", gsettings_value(home) == "prefer-light", r.stdout + r.stderr)
-    expect("Sunlight-on note describes the transition, not a timer",
-           "holds until the next sunrise or sunset" in r.stderr and "when Sunlight switches it" in r.stderr
-           and "every" not in r.stderr and "turn it off" not in r.stderr.lower(), r.stderr)
+    expect("Sunlight-on theme note says manual picks last until transition",
+           "a mode you pick manually holds until the next sunrise or sunset" in r.stderr
+           and "when Sunlight switches it" in r.stderr
+           and "only if you want to keep one mode permanently" in r.stderr
+           and "every few seconds" not in r.stderr, r.stderr)
 
 with tempfile.TemporaryDirectory() as home:
     r = theme_run(home, "dark", solar="[solar]\nenabled = true\n")
