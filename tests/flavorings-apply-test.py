@@ -1014,7 +1014,10 @@ with tempfile.TemporaryDirectory() as stage:
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
                     env=sync_env, capture_output=True, text=True, timeout=8,
                 )
+                # Snapshot immediately when refresh returns; no later poll may satisfy R8.
                 swaybg_calls = single_wallpaper_log.read_text().splitlines()
+                redraw_at_return = any("new-dark/backgrounds/new.webp" in line
+                                        for line in swaybg_calls[1:])
                 palette_calls = (sync_home / "palette.log").read_text().splitlines()
                 control_paths = wallpaper_runtime_paths(runtime, "wayland-test")
                 request_path = control_paths["request"]
@@ -1023,7 +1026,7 @@ with tempfile.TemporaryDirectory() as stage:
                 ack_token = ack_path.read_text().strip() if ack_path.is_file() else ""
                 synced = (sync_result.returncode == 0 and len(swaybg_calls) >= 2
                           and "old-dark/backgrounds/old.webp" in swaybg_calls[0]
-                          and "new-dark/backgrounds/new.webp" in swaybg_calls[-1]
+                          and redraw_at_return
                           and request_token and ack_token == request_token
                           and palette_calls == [f"once|dark|{themes / 'new-dark'}"]
                           and os.readlink(current / "dark") == str(themes / "new-dark")
@@ -1032,6 +1035,7 @@ with tempfile.TemporaryDirectory() as stage:
                 sync_detail = (sync_result.stderr or sync_result.stdout).strip()[-240:]
                 if not synced:
                     sync_detail = (f"{sync_detail} rc={sync_result.returncode}; "
+                                   f"redraw_at_return={redraw_at_return}; "
                                    f"wallpapers={swaybg_calls}; palette={palette_calls}; "
                                    f"dark={os.readlink(current / 'dark')}; "
                                    f"request={request_token!r}; ack={ack_token!r}; "
@@ -1085,10 +1089,17 @@ with tempfile.TemporaryDirectory() as stage:
                     and len({path.name for path in (*paths_a.values(), *paths_b.values())}) == 6):
                 # Allow both monitors to snapshot the current links, then refresh only display A.
                 time.sleep(1.2)
+                initial_calls_a = len(logs_a.read_text().splitlines())
+                initial_calls_b = len(logs_b.read_text().splitlines())
                 selection.write_text("old\n")
                 result_a = subprocess.run(
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
                     env=env_a, capture_output=True, text=True, timeout=8,
+                )
+                calls_a_at_return = logs_a.read_text().splitlines()
+                redraw_a_at_return = any(
+                    "old-dark/backgrounds/old.webp" in line
+                    for line in calls_a_at_return[initial_calls_a:]
                 )
                 request_a = paths_a["request"].read_text().strip() if paths_a["request"].is_file() else ""
                 ack_a = paths_a["ack"].read_text().strip() if paths_a["ack"].is_file() else ""
@@ -1106,6 +1117,11 @@ with tempfile.TemporaryDirectory() as stage:
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
                     env=env_b, capture_output=True, text=True, timeout=8,
                 )
+                calls_b_at_return = logs_b.read_text().splitlines()
+                redraw_b_at_return = any(
+                    "new-dark/backgrounds/new.webp" in line
+                    for line in calls_b_at_return[initial_calls_b:]
+                )
                 request_b = paths_b["request"].read_text().strip() if paths_b["request"].is_file() else ""
                 ack_b = paths_b["ack"].read_text().strip() if paths_b["ack"].is_file() else ""
                 unchanged_a = (paths_a["request"].read_text().strip() == request_a
@@ -1119,6 +1135,7 @@ with tempfile.TemporaryDirectory() as stage:
                 calls_a = logs_a.read_text().splitlines()
                 calls_b = logs_b.read_text().splitlines()
                 isolated = (result_a.returncode == 0 and result_b.returncode == 0
+                            and redraw_a_at_return and redraw_b_at_return
                             and request_a and ack_a == request_a and no_b_ack_after_a
                             and request_b and ack_b == request_b and unchanged_a
                             and any("old-dark/backgrounds/old.webp" in line for line in calls_a)
@@ -1130,6 +1147,8 @@ with tempfile.TemporaryDirectory() as stage:
                     f"rc_a={result_a.returncode}; rc_b={result_b.returncode}; "
                     f"request_a={request_a!r}; ack_a={ack_a!r}; "
                     f"request_b={request_b!r}; ack_b={ack_b!r}; "
+                    f"redraw_a_at_return={redraw_a_at_return}; "
+                    f"redraw_b_at_return={redraw_b_at_return}; "
                     f"no_b_ack_after_a={no_b_ack_after_a}; unchanged_a={unchanged_a}; "
                     f"calls_a={calls_a}; calls_b={calls_b}"
                 )
