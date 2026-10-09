@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Draw the selected theme and keep Strata and Chromium on the same variant."""
 import fcntl
+import hashlib
 import os
 import select
 import signal
@@ -15,9 +16,7 @@ INTEGRATIONS = Path(__file__).with_name("gooarchy-theme-integrations")
 IMAGE_SUFFIXES = {".webp", ".png", ".jpg", ".jpeg"}
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
 CURRENT_THEME = CONFIG_HOME / "gooarchy" / "current-theme"
-RUNTIME_LOCK = "gooarchy-wallpaper.lock"
-REFRESH_REQUEST = "gooarchy-wallpaper.request"
-REFRESH_ACK = "gooarchy-wallpaper.ack"
+RUNTIME_CONTROL_PREFIX = "gooarchy-wallpaper"
 
 
 def variant_path():
@@ -66,11 +65,23 @@ def current_theme_signature():
     return tuple(signature)
 
 
+def runtime_control_paths(runtime_path):
+    display = os.environ.get("WAYLAND_DISPLAY")
+    if not display:
+        return None, None, None
+    display_id = hashlib.sha256(display.encode("utf-8")).hexdigest()
+    prefix = f"{RUNTIME_CONTROL_PREFIX}.{display_id}"
+    return (runtime_path / f"{prefix}.lock",
+            runtime_path / f"{prefix}.request",
+            runtime_path / f"{prefix}.ack")
+
+
 def open_runtime_control():
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime or not Path(runtime).is_dir():
+    if not runtime or not Path(runtime).is_dir() or not os.environ.get("WAYLAND_DISPLAY"):
         return None, None, None
-    lock_path = Path(runtime) / RUNTIME_LOCK
+    runtime_path = Path(runtime)
+    lock_path, request_path, ack_path = runtime_control_paths(runtime_path)
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     lock_fd = os.open(lock_path, flags, 0o600)
     try:
@@ -84,8 +95,7 @@ def open_runtime_control():
     except BaseException:
         os.close(lock_fd)
         raise
-    runtime_path = Path(runtime)
-    return lock_fd, runtime_path / REFRESH_REQUEST, runtime_path / REFRESH_ACK
+    return lock_fd, request_path, ack_path
 
 
 def read_runtime_token(path):

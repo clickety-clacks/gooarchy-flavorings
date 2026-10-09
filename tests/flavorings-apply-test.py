@@ -18,6 +18,7 @@ installed), is rewritten only when it changes and is removed when nothing is lef
 cases run with no Omarchy, whatever the test machine has.
 """
 import fcntl
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -164,6 +165,12 @@ refresh = load_module("theme_refresh", os.path.join(repo, "libexec", "gooarchy-t
 
 def completed(command, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+
+def wallpaper_runtime_paths(runtime, display):
+    display_id = hashlib.sha256(display.encode("utf-8")).hexdigest()
+    prefix = f"gooarchy-wallpaper.{display_id}"
+    return {suffix: runtime / f"{prefix}.{suffix}" for suffix in ("lock", "request", "ack")}
 
 
 # The resolver is the only reader of the theme selection record and follows portal precedence.
@@ -965,7 +972,7 @@ with tempfile.TemporaryDirectory() as stage:
         sync_bin.mkdir()
         (sync_bin / "gsettings").write_text("#!/bin/sh\nexec sleep 30\n")
         (sync_bin / "swaybg").write_text(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$HOME/swaybg.log\"\nexec sleep 30\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$HOME/swaybg-$WAYLAND_DISPLAY.log\"\nexec sleep 30\n",
         )
         for name in ("gsettings", "swaybg"):
             (sync_bin / name).chmod(0o755)
@@ -988,17 +995,18 @@ with tempfile.TemporaryDirectory() as stage:
             "TEST_THEME_ROOT": str(themes),
             "TEST_MODE": "dark",
         }
+        single_wallpaper_log = sync_home / "swaybg-wayland-test.log"
         wallpaper_helper = subprocess.Popen(
             [str(wallpaper)], env=sync_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         deadline = time.monotonic() + 5
-        while (not (sync_home / "swaybg.log").exists() and wallpaper_helper.poll() is None
+        while (not single_wallpaper_log.exists() and wallpaper_helper.poll() is None
                and time.monotonic() < deadline):
             time.sleep(0.01)
         synced = False
         sync_detail = ""
         try:
-            if (sync_home / "swaybg.log").exists() and wallpaper_helper.poll() is None:
+            if single_wallpaper_log.exists() and wallpaper_helper.poll() is None:
                 # Let startup capture the original links before changing the selection.
                 time.sleep(1.2)
                 selection.write_text("new\n")
@@ -1006,10 +1014,11 @@ with tempfile.TemporaryDirectory() as stage:
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
                     env=sync_env, capture_output=True, text=True, timeout=8,
                 )
-                swaybg_calls = (sync_home / "swaybg.log").read_text().splitlines()
+                swaybg_calls = single_wallpaper_log.read_text().splitlines()
                 palette_calls = (sync_home / "palette.log").read_text().splitlines()
-                request_path = runtime / "gooarchy-wallpaper.request"
-                ack_path = runtime / "gooarchy-wallpaper.ack"
+                control_paths = wallpaper_runtime_paths(runtime, "wayland-test")
+                request_path = control_paths["request"]
+                ack_path = control_paths["ack"]
                 request_token = request_path.read_text().strip() if request_path.is_file() else ""
                 ack_token = ack_path.read_text().strip() if ack_path.is_file() else ""
                 synced = (sync_result.returncode == 0 and len(swaybg_calls) >= 2
@@ -1019,7 +1028,7 @@ with tempfile.TemporaryDirectory() as stage:
                           and palette_calls == [f"once|dark|{themes / 'new-dark'}"]
                           and os.readlink(current / "dark") == str(themes / "new-dark")
                           and wallpaper_helper.poll() is None
-                          and (runtime / "gooarchy-wallpaper.lock").is_file())
+                          and control_paths["lock"].is_file())
                 sync_detail = (sync_result.stderr or sync_result.stdout).strip()[-240:]
                 if not synced:
                     sync_detail = (f"{sync_detail} rc={sync_result.returncode}; "
@@ -1043,6 +1052,113 @@ with tempfile.TemporaryDirectory() as stage:
             sync_detail = f"{sync_detail}; helper stderr: {helper_error.strip()[-240:]}".strip("; ")
         expect("same-mode refresh waits for wallpaper acknowledgement after redraw of committed target",
                synced, sync_detail)
+
+        # Two Scottland displays share XDG_RUNTIME_DIR but must own independent wallpaper control
+        # files. Theme links remain shared, so both sessions may redraw as the selected theme moves;
+        # only the session issuing a refresh may receive that request and acknowledge its token.
+        display_a, display_b = "wayland-a", "wayland-b"
+        paths_a = wallpaper_runtime_paths(runtime, display_a)
+        paths_b = wallpaper_runtime_paths(runtime, display_b)
+        env_a = {**sync_env, "WAYLAND_DISPLAY": display_a}
+        env_b = {**sync_env, "WAYLAND_DISPLAY": display_b}
+        logs_a = sync_home / f"swaybg-{display_a}.log"
+        logs_b = sync_home / f"swaybg-{display_b}.log"
+        helper_a = subprocess.Popen(
+            [str(wallpaper)], env=env_a, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        helper_b = subprocess.Popen(
+            [str(wallpaper)], env=env_b, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        isolated = False
+        isolation_detail = ""
+        helper_errors = []
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if ((logs_a.exists() or helper_a.poll() is not None)
+                        and (logs_b.exists() or helper_b.poll() is not None)):
+                    break
+                time.sleep(0.01)
+            if (logs_a.exists() and logs_b.exists() and helper_a.poll() is None
+                    and helper_b.poll() is None and paths_a["lock"].is_file()
+                    and paths_b["lock"].is_file()
+                    and len({path.name for path in (*paths_a.values(), *paths_b.values())}) == 6):
+                # Allow both monitors to snapshot the current links, then refresh only display A.
+                time.sleep(1.2)
+                selection.write_text("old\n")
+                result_a = subprocess.run(
+                    [str(wallpaper.with_name("gooarchy-theme-refresh"))],
+                    env=env_a, capture_output=True, text=True, timeout=8,
+                )
+                request_a = paths_a["request"].read_text().strip() if paths_a["request"].is_file() else ""
+                ack_a = paths_a["ack"].read_text().strip() if paths_a["ack"].is_file() else ""
+                no_b_ack_after_a = not paths_b["request"].exists() and not paths_b["ack"].exists()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if logs_b.exists() and any("old-dark/backgrounds/old.webp" in line
+                                                for line in logs_b.read_text().splitlines()):
+                        break
+                    time.sleep(0.02)
+
+                # Then refresh from display B and assert that A retains its own completed token.
+                selection.write_text("new\n")
+                result_b = subprocess.run(
+                    [str(wallpaper.with_name("gooarchy-theme-refresh"))],
+                    env=env_b, capture_output=True, text=True, timeout=8,
+                )
+                request_b = paths_b["request"].read_text().strip() if paths_b["request"].is_file() else ""
+                ack_b = paths_b["ack"].read_text().strip() if paths_b["ack"].is_file() else ""
+                unchanged_a = (paths_a["request"].read_text().strip() == request_a
+                               and paths_a["ack"].read_text().strip() == ack_a)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if logs_a.exists() and any("new-dark/backgrounds/new.webp" in line
+                                               for line in logs_a.read_text().splitlines()[1:]):
+                        break
+                    time.sleep(0.02)
+                calls_a = logs_a.read_text().splitlines()
+                calls_b = logs_b.read_text().splitlines()
+                isolated = (result_a.returncode == 0 and result_b.returncode == 0
+                            and request_a and ack_a == request_a and no_b_ack_after_a
+                            and request_b and ack_b == request_b and unchanged_a
+                            and any("old-dark/backgrounds/old.webp" in line for line in calls_a)
+                            and any("old-dark/backgrounds/old.webp" in line for line in calls_b)
+                            and any("new-dark/backgrounds/new.webp" in line for line in calls_a)
+                            and any("new-dark/backgrounds/new.webp" in line for line in calls_b)
+                            and helper_a.poll() is None and helper_b.poll() is None)
+                isolation_detail = (
+                    f"rc_a={result_a.returncode}; rc_b={result_b.returncode}; "
+                    f"request_a={request_a!r}; ack_a={ack_a!r}; "
+                    f"request_b={request_b!r}; ack_b={ack_b!r}; "
+                    f"no_b_ack_after_a={no_b_ack_after_a}; unchanged_a={unchanged_a}; "
+                    f"calls_a={calls_a}; calls_b={calls_b}"
+                )
+            else:
+                isolation_detail = (
+                    f"display_a_running={helper_a.poll() is None}; "
+                    f"display_b_running={helper_b.poll() is None}; "
+                    f"log_a={logs_a.exists()}; log_b={logs_b.exists()}; "
+                    f"control_a={sorted(path.name for path in paths_a.values() if path.exists())}; "
+                    f"control_b={sorted(path.name for path in paths_b.values() if path.exists())}"
+                )
+        except Exception as error:
+            isolation_detail = f"{type(error).__name__}: {error}"
+        finally:
+            for helper in (helper_a, helper_b):
+                if helper.poll() is None:
+                    helper.terminate()
+            for helper in (helper_a, helper_b):
+                try:
+                    _, helper_error = helper.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    helper.kill()
+                    _, helper_error = helper.communicate(timeout=5)
+                if helper_error.strip():
+                    helper_errors.append(helper_error.strip()[-240:])
+        if helper_errors:
+            isolation_detail = f"{isolation_detail}; helper stderr: {' | '.join(helper_errors)}".strip("; ")
+        expect("two displays sharing XDG_RUNTIME_DIR keep wallpaper lock/request/ack control isolated",
+               isolated, isolation_detail)
 
     notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
     notice_relative_path = os.path.join(
