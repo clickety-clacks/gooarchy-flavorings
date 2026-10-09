@@ -20,6 +20,19 @@ its AGENTS.md, core/INVARIANTS.md (principles P1-P10, especially P9 and P10) and
 - **Testing**: never on osanwe (Mike's daily machine); test on plumbus with real input. Report done
   only after that.
 
+## Branches and releases (Mike, 2026-10-08)
+
+Every agent working in this repository follows this.
+
+- `main` plus version tags (`v0.x.y`). Gooarchy and the Scottland Omarchy adapter install this package
+  pinned to a tag, so a change reaches users only when a consumer moves its pin.
+- A release branch (`0.x`) exists only when a change must ship together with a specific Scottland
+  release; cut it from `main` and merge `main` into it whenever `main` changes.
+- Feature branches are short-lived and deleted after merge. A PR lands only on a target tip it was tested
+  against (merge queue once the Gooarchy PDO sets it up; until then, update to the tip and rerun the checks
+  right before merging), after review by the other harness.
+- Shipping: tag, then tell the consumers' delivery owner (the Gooarchy PDO) the tag and its contents.
+
 ## Privacy of developer networks (Mike, 2026-10-04)
 
 Never reveal the internal topology or identifiers of any developer's network here (host names, IPs, tailnet

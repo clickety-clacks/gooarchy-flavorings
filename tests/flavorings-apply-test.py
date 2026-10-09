@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Test gooarchy-flavorings-apply and gooarchy-theme in throwaway home directories, with
-stand-ins for the desktop commands they call (gsettings, dconf, xdg-user-dirs-update, pgrep). No
-desktop, no real settings.
+"""Test gooarchy-flavorings-apply in throwaway home directories, with stand-ins for the desktop
+commands it calls (gsettings, dconf, xdg-user-dirs-update, pgrep). No desktop, no real settings.
 
   tests/flavorings-apply-test.py      exits 1 if anything fails
 
 Covered: existing private files keep mode 0600 (and their contents); new private files are created
 0600; a symlinked config is left alone and reported; an app that's running is deferred; an
 explicitly set color scheme (even "default") is kept; an interrupted write leaves the old file and
-no temporary file; two runs at once leave valid files; gooarchy-theme's light/dark/toggle set the
-same color-scheme values as before, and both setup/theme Sunlight notices explain transition-only
-manual picks and that disabling Sunlight keeps one mode permanently.
+no temporary file; two runs at once leave valid files. The package install places the unchanged
+scoped notice at its expected path and preserves installed theme entries verbatim to their source.
+Both setup/theme Sunlight notices explain that manual picks hold until the next transition and that
+turning Sunlight off is only for keeping one mode permanently.
 """
 import importlib.machinery
 import importlib.util
@@ -144,8 +144,90 @@ with tempfile.TemporaryDirectory() as home:
     data = json.load(open(os.path.join(home, ".claude.json")))
     expect("concurrent runs leave valid files", data == {"keep": 1, "preferredNotifChannel": "terminal_bell"}, data)
 
-# gooarchy-theme: light/dark/toggle keep setting the same color-scheme values as before, and the
-# Sunlight note's text and presence follow ~/.config/scottland/solar.ini's [solar] enabled key.
+# Snapshot paths without following symlinks. Comparing these tuples checks installed modes,
+# file bytes and symlink targets, as well as file types and directory modes.
+def tree_snapshot(root):
+    entries = {}
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for name in sorted(directories + files):
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, root)
+            metadata = os.lstat(path)
+            entry_mode = stat.S_IMODE(metadata.st_mode)
+            if os.path.islink(path):
+                entries[relative] = ("symlink", entry_mode, os.readlink(path))
+            elif stat.S_ISDIR(metadata.st_mode):
+                entries[relative] = ("directory", entry_mode)
+            elif stat.S_ISREG(metadata.st_mode):
+                with open(path, "rb") as stream:
+                    entries[relative] = ("file", entry_mode, stream.read())
+            else:
+                entries[relative] = ("other", entry_mode, stat.S_IFMT(metadata.st_mode))
+    return entries
+
+
+with tempfile.TemporaryDirectory() as stage:
+    candidate_install = subprocess.run(
+        ["make", "install", f"DESTDIR={stage}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    candidate_installed = candidate_install.returncode == 0
+    expect("candidate package install succeeds in DESTDIR", candidate_installed,
+           (candidate_install.stderr or candidate_install.stdout).strip()[-240:])
+
+    notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
+    notice_relative_path = os.path.join(
+        "usr", "share", "licenses", "gooarchy-flavorings", notice_name,
+    )
+    installed_notice_path = os.path.join(stage, notice_relative_path)
+    source_notice_path = os.path.join(repo, "licenses", notice_name)
+    if candidate_installed:
+        expect("CC0 notice is installed at its scoped path",
+               os.path.isfile(installed_notice_path) and not os.path.islink(installed_notice_path),
+               notice_relative_path)
+        installed_notice = tree_snapshot(stage).get(notice_relative_path)
+        with open(source_notice_path, "rb") as source_notice:
+            expected_notice = source_notice.read()
+        expect("installed CC0 legal text matches source bytes",
+               installed_notice is not None and installed_notice[0] == "file"
+               and installed_notice[2] == expected_notice)
+        expect("installed CC0 notice mode is 0644",
+               installed_notice is not None and installed_notice[0] == "file"
+               and installed_notice[1] == 0o644,
+               oct(installed_notice[1]) if installed_notice and installed_notice[0] == "file" else "missing")
+
+        themes_match = True
+        theme_details = []
+        for theme in ("watercolor-dream-light", "watercolor-dream-dark"):
+            source_theme = os.path.join(repo, "themes", theme)
+            installed_theme = os.path.join(stage, "usr", "share", "gooarchy-flavorings", "themes", theme)
+            source_entries = tree_snapshot(source_theme)
+            installed_entries = tree_snapshot(installed_theme) if os.path.isdir(installed_theme) else {}
+            extra_entries = set(installed_entries) - set(source_entries)
+            expected_generated = {"background.webp", "ghostty"} - set(source_entries)
+            generated_present = all(installed_entries.get(item, (None,))[0] == "file"
+                                    for item in ("background.webp", "ghostty"))
+            changed_entries = [path for path, entry in source_entries.items()
+                               if installed_entries.get(path) != entry]
+            same = (generated_present and not changed_entries
+                    and extra_entries == expected_generated)
+            if not same:
+                themes_match = False
+                theme_details.append({"theme": theme,
+                                      "changed": changed_entries[:10],
+                                      "extra": sorted(extra_entries)})
+        expect("installed Watercolor Dream theme entries remain verbatim to source",
+               themes_match, theme_details)
+    else:
+        expect("CC0 notice is installed at its scoped path", False, "candidate DESTDIR install did not complete")
+        expect("installed CC0 legal text matches source bytes", False, "candidate DESTDIR install did not complete")
+        expect("installed CC0 notice mode is 0644", False, "candidate DESTDIR install did not complete")
+        expect("installed Watercolor Dream theme entries remain verbatim to source",
+               False, "candidate DESTDIR install did not complete")
+
+
+# gooarchy-theme: the mode commands keep their color-scheme behavior, and the Sunlight notice
+# follows ~/.config/scottland/solar.ini without suggesting an indefinite manual override.
 def theme_stubs(bindir):
     os.makedirs(bindir, exist_ok=True)
     gsettings = """#!/bin/sh
@@ -182,7 +264,7 @@ def gsettings_value(home):
 with tempfile.TemporaryDirectory() as home:
     r = theme_run(home, "light", solar="[solar]\nenabled = true\n")
     expect("light still sets prefer-light", gsettings_value(home) == "prefer-light", r.stdout + r.stderr)
-    expect("Sunlight-on theme note says manual picks last until transition",
+    expect("Sunlight-on theme note says manual picks hold until transition",
            "a mode you pick manually holds until the next sunrise or sunset" in r.stderr
            and "when Sunlight switches it" in r.stderr
            and "only if you want to keep one mode permanently" in r.stderr
