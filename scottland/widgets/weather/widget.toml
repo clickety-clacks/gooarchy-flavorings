@@ -1,0 +1,4 @@
+id = "gooarchy-weather"
+name = "Weather"
+exec = "quickshell -p %d/shell.qml"
+apps = ["^scottland\\-weather$"]

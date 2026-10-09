@@ -1,0 +1,4 @@
+id = "gooarchy-system-stats"
+name = "System Stats"
+exec = "quickshell -p %d/shell.qml"
+apps = ["^scottland\\-system\\-stats$"]
