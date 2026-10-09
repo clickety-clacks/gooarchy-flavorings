@@ -17,6 +17,7 @@ and mosh titles the user doesn't set, default apps that win over the previous on
 installed), is rewritten only when it changes and is removed when nothing is left. The Gooarchy
 cases run with no Omarchy, whatever the test machine has.
 """
+import fcntl
 import importlib.machinery
 import importlib.util
 import json
@@ -26,6 +27,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from contextlib import redirect_stderr
 from io import StringIO
 
@@ -221,6 +223,48 @@ with tempfile.TemporaryDirectory() as temp:
            and lookup.lookup_variant("dark", temporary_catalogue, selected)
            == (temporary_catalogue / "plain-dark").resolve()
            and selected.read_text() == "plain\n")
+    for suffix in ("light", "dark"):
+        variant = temporary_catalogue / f"other-{suffix}"
+        (variant / "backgrounds").mkdir(parents=True)
+        (variant / "colors.toml").write_text(required)
+        (variant / "backgrounds" / "first.webp").write_bytes(b"other")
+    real_validate_theme = lookup.validate_theme
+    validated_slugs = []
+
+    def switch_selection_after_validation(slug, theme_dirs, require_webp=True):
+        validated_slugs.append(slug)
+        result = real_validate_theme(slug, theme_dirs, require_webp)
+        selected.write_text("other\n")
+        return result
+
+    lookup.validate_theme = switch_selection_after_validation
+    try:
+        pair = lookup.lookup_variants(temporary_catalogue, selected)
+    finally:
+        lookup.validate_theme = real_validate_theme
+    expect("pair lookup uses one selection snapshot for both modes",
+           pair == {"light": (temporary_catalogue / "plain-light").resolve(),
+                    "dark": (temporary_catalogue / "plain-dark").resolve()}
+           and validated_slugs == ["plain"] and selected.read_text() == "other\n")
+    cli_config = Path(temp) / "cli-config"
+    cli_selection = cli_config / "gooarchy" / "theme"
+    cli_selection.parent.mkdir(parents=True)
+    cli_selection.write_text("watercolor-dream\n")
+    cli_env = os.environ.copy()
+    cli_env["XDG_CONFIG_HOME"] = str(cli_config)
+    pair_result = subprocess.run(
+        [sys.executable, os.path.join(repo, "libexec", "gooarchy-theme-lookup"), "--pair"],
+        env=cli_env, capture_output=True, text=True,
+    )
+    try:
+        cli_pair = json.loads(pair_result.stdout)
+    except json.JSONDecodeError:
+        cli_pair = None
+    expect("lookup CLI prints both selected absolute variants as one pair",
+           pair_result.returncode == 0 and cli_pair == {
+               "light": str((Path(repo) / "themes" / "watercolor-dream-light").resolve()),
+               "dark": str((Path(repo) / "themes" / "watercolor-dream-dark").resolve()),
+           })
     expect("the first background is selected by byte order of its filename",
            lookup.background_files(temporary_catalogue / "plain-light")[0].name == "a.webp")
 
@@ -264,7 +308,7 @@ with tempfile.TemporaryDirectory() as temp:
 
     def fake_lookup(command, **kwargs):
         calls.append(tuple(command))
-        return completed(command, stdout=targets[command[1]] + "\n")
+        return completed(command, stdout=json.dumps(targets) + "\n")
 
     refresh.refresh(current, lookup_path, fake_lookup)
     expect("refresh creates the selected light/dark links and no other entry",
@@ -294,7 +338,8 @@ with tempfile.TemporaryDirectory() as temp:
            and sorted(path.name for path in current.iterdir()) == ["dark", "light"]
            and not [path for path in current.parent.iterdir() if path.name.endswith(".tmp")]
            and observed_destinations == [True, True]
-           and selection.read_text() == "plain\n")
+           and selection.read_text() == "plain\n"
+           and calls == [(str(lookup_path), "--pair")] * 2)
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
@@ -304,7 +349,9 @@ with tempfile.TemporaryDirectory() as temp:
     user_file.write_text("keep this file\n")
 
     def valid_lookup(command, **kwargs):
-        return completed(command, stdout=f"/themes/plain-{command[1]}\n")
+        return completed(command, stdout=json.dumps({
+            "light": "/themes/plain-light", "dark": "/themes/plain-dark",
+        }))
 
     try:
         refresh.refresh(current, Path(repo) / "libexec" / "gooarchy-theme-lookup", valid_lookup)
@@ -321,18 +368,115 @@ with tempfile.TemporaryDirectory() as temp:
     calls = []
 
     def incomplete_lookup(command, **kwargs):
-        calls.append(command[1])
-        if command[1] == "dark":
-            return completed(command, returncode=1, stderr="catalogue unavailable")
-        return completed(command, stdout="/themes/plain-light\n")
+        calls.append(tuple(command))
+        return completed(command, returncode=1, stderr="catalogue unavailable")
 
     try:
         refresh.refresh(current, Path(repo) / "libexec" / "gooarchy-theme-lookup", incomplete_lookup)
         refused = False
     except RuntimeError as error:
-        refused = "theme lookup failed for dark" in str(error)
-    expect("refresh resolves both targets before creating its location",
-           refused and calls == ["light", "dark"] and not current.parent.exists())
+        refused = "theme lookup failed" in str(error)
+    expect("refresh fails before creating its location when pair lookup fails",
+           refused and calls == [(str(Path(repo) / "libexec" / "gooarchy-theme-lookup"), "--pair")]
+           and not current.exists()
+           and [path.name for path in current.parent.iterdir()] == [".current-theme-refresh.lock"])
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    current = root / "config" / "gooarchy" / "current-theme"
+    parent = current.parent
+    parent.mkdir(parents=True)
+    selection = parent / "theme"
+    selection.write_text("old\n")
+    lock_path = parent / ".current-theme-refresh.lock"
+    first_lookup_started = threading.Event()
+    release_first_lookup = threading.Event()
+    second_lookup_started = threading.Event()
+    second_lock_attempted = threading.Event()
+    first_finished = threading.Event()
+    second_finished = threading.Event()
+    errors = []
+
+    def race_lookup(command, **kwargs):
+        slug = selection.read_text().strip()
+        if threading.current_thread().name == "refresh-first":
+            first_lookup_started.set()
+            if not release_first_lookup.wait(5):
+                raise RuntimeError("test timed out waiting to release first lookup")
+        else:
+            second_lookup_started.set()
+        return completed(command, stdout=json.dumps({
+            "light": f"/themes/{slug}-light", "dark": f"/themes/{slug}-dark",
+        }))
+
+    real_flock = fcntl.flock
+
+    def observe_second_lock(fd, operation):
+        if threading.current_thread().name == "refresh-second" and operation & fcntl.LOCK_EX:
+            second_lock_attempted.set()
+        return real_flock(fd, operation)
+
+    refresh.fcntl.flock = observe_second_lock
+
+    def run_refresh(done):
+        try:
+            refresh.refresh(current, Path(repo) / "libexec" / "gooarchy-theme-lookup", race_lookup)
+        except Exception as error:
+            errors.append(str(error))
+        finally:
+            done.set()
+
+    first = threading.Thread(name="refresh-first", target=run_refresh, args=(first_finished,))
+    second = threading.Thread(name="refresh-second", target=run_refresh, args=(second_finished,))
+    probe_fd = None
+    probe_holds_lock = False
+    first_holds_lock_during_lookup = False
+    newer_lookup_waited_for_first_commit = False
+    try:
+        first.start()
+        first_lookup_started_ok = first_lookup_started.wait(5)
+        if first_lookup_started_ok:
+            probe_fd = os.open(lock_path, os.O_RDWR)
+            try:
+                fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                probe_holds_lock = True
+            except BlockingIOError:
+                first_holds_lock_during_lookup = True
+
+        selection.write_text("new\n")
+        second.start()
+        second_lock_seen = second_lock_attempted.wait(5)
+        newer_lookup_waited_for_first_commit = not second_lookup_started.is_set()
+
+        if probe_holds_lock:
+            real_flock(probe_fd, fcntl.LOCK_UN)
+            probe_holds_lock = False
+            second_finished.wait(5)
+        release_first_lookup.set()
+        first.join(5)
+        second.join(5)
+    finally:
+        release_first_lookup.set()
+        if probe_holds_lock and probe_fd is not None:
+            real_flock(probe_fd, fcntl.LOCK_UN)
+        if probe_fd is not None:
+            os.close(probe_fd)
+        refresh.fcntl.flock = real_flock
+        if first.is_alive():
+            first.join(5)
+        if second.is_alive():
+            second.join(5)
+
+    final_targets = {
+        mode: os.readlink(current / mode) if (current / mode).is_symlink() else None
+        for mode in ("light", "dark")
+    }
+    expect("refresh serializes pair resolution and commit so an older run cannot overwrite a newer selection",
+           first_lookup_started_ok and second_lock_seen and first_holds_lock_during_lookup
+           and newer_lookup_waited_for_first_commit and first_finished.is_set()
+           and second_finished.is_set() and not errors
+           and final_targets == {"light": "/themes/new-light", "dark": "/themes/new-dark"},
+           errors)
 
 # make install copies catalogue entries verbatim and derives files without a second checkout.
 with tempfile.TemporaryDirectory() as destdir:

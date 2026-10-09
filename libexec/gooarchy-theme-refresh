@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Refresh the two current-theme links from the selected theme record."""
 import fcntl
+import json
 import os
 import subprocess
 import sys
@@ -36,18 +37,6 @@ def _prepare_location(current):
 
 
 def refresh(current_theme=CURRENT_THEME, lookup=LOOKUP, run=subprocess.run):
-    targets = {}
-    for mode in MODES:
-        try:
-            result = run([str(lookup), mode], capture_output=True, text=True, timeout=5)
-        except (OSError, subprocess.SubprocessError) as error:
-            raise RuntimeError(f"theme lookup failed for {mode}: {error}") from error
-        target = result.stdout.strip()
-        if result.returncode != 0 or not target or not Path(target).is_absolute():
-            detail = result.stderr.strip() or "lookup returned no absolute path"
-            raise RuntimeError(f"theme lookup failed for {mode}: {detail}")
-        targets[mode] = target
-
     current = Path(current_theme)
     parent = current.parent
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -56,6 +45,22 @@ def refresh(current_theme=CURRENT_THEME, lookup=LOOKUP, run=subprocess.run):
     lock_fd = os.open(lock_path, flags, 0o600)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            result = run([str(lookup), "--pair"], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(f"theme lookup failed: {error}") from error
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "lookup returned no targets"
+            raise RuntimeError(f"theme lookup failed: {detail}")
+        try:
+            targets = json.loads(result.stdout)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"theme lookup returned invalid targets: {error}") from error
+        if (not isinstance(targets, dict) or set(targets) != set(MODES)
+                or any(not isinstance(targets[mode], str)
+                       or not Path(targets[mode]).is_absolute() for mode in MODES)):
+            raise RuntimeError("theme lookup returned invalid targets: expected absolute light/dark paths")
+
         _prepare_location(current)
         for mode in MODES:
             temp = parent / f".{current.name}.{mode}.{uuid.uuid4().hex}.tmp"
