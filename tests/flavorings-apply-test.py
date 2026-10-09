@@ -638,6 +638,38 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
+    omarchy = root / "omarchy"
+    omarchy.mkdir()
+    refresh_attempts = []
+    original_state = apply_module.STATE
+    original_markers = apply_module.MARKERS
+    original_steps = apply_module.STEPS
+    original_omarchy = apply_module.OMARCHY
+    original_helper_path = apply_module.helper_path
+    try:
+        apply_module.OMARCHY = omarchy.is_dir()
+        apply_module.STATE = root / "state" / "gooarchy"
+        apply_module.MARKERS = apply_module.STATE / "flavorings"
+        apply_module.STEPS = []
+
+        def record_refresh_attempt(installed, name):
+            refresh_attempts.append((installed, name))
+            return root / "unused-refresh-helper"
+
+        apply_module.helper_path = record_refresh_attempt
+        result = apply_module.main()
+    finally:
+        apply_module.STATE = original_state
+        apply_module.MARKERS = original_markers
+        apply_module.STEPS = original_steps
+        apply_module.OMARCHY = original_omarchy
+        apply_module.helper_path = original_helper_path
+    expect("integrated apply skips the refresh helper when OMARCHY is true",
+           result == 0 and not refresh_attempts
+           and (root / "state" / "gooarchy" / "flavorings.lock").is_file())
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
     home = root / "home"
     home.mkdir()
     omarchy = root / "omarchy"
