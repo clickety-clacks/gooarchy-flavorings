@@ -36,6 +36,11 @@ from io import StringIO
 for name in ("OMARCHY_PATH", "SCOTTLAND_HOOKS", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY"):
     os.environ.pop(name, None)
 
+# Keep default Gooarchy fixtures independent of whether the test host has Omarchy installed.
+_test_environment = tempfile.TemporaryDirectory(prefix="gooarchy-flavorings-test-")
+TEST_MISSING_OMARCHY = Path(_test_environment.name) / "omarchy-not-installed"
+os.environ["OMARCHY_PATH"] = str(TEST_MISSING_OMARCHY)
+
 repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tool = os.path.join(repo, "bin", "gooarchy-flavorings-apply")
 failures = 0
@@ -131,7 +136,7 @@ def environment(home, omarchy=None):
     """Gooarchy (no Omarchy) unless OMARCHY is a stand-in Omarchy directory."""
     return {"HOME": home, "PATH": f"{os.path.join(home, '.stubs')}:/usr/bin:/bin",
             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent",
-            "OMARCHY_PATH": str(omarchy or os.path.join(home, "no-omarchy")),
+            "OMARCHY_PATH": str(omarchy if omarchy is not None else TEST_MISSING_OMARCHY),
             "XDG_CONFIG_DIRS": os.path.join(home, ".sys", "etc-xdg"),
             "XDG_DATA_DIRS": os.path.join(home, ".sys", "share")}
 
