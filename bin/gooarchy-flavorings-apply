@@ -502,7 +502,6 @@ STEPS = [("folders", folders), ("color-scheme", color_scheme), ("chromium", chro
 
 
 def main():
-    MARKERS.mkdir(parents=True, exist_ok=True)
     if "--list" in sys.argv:
         for name, _ in STEPS:
             if OMARCHY and name in GOOARCHY_ONLY:
@@ -510,6 +509,7 @@ def main():
             else:
                 print(f"{name}: {'applied' if (MARKERS / name).exists() else 'not yet'}")
         return 0
+    MARKERS.mkdir(parents=True, exist_ok=True)
     with open(STATE / "flavorings.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time (installer, session autostart, config build)
         if "--override-report" in sys.argv:
@@ -517,16 +517,17 @@ def main():
                 override_report()
             return 0
         failed = False
-        try:
-            refresh_path = helper_path(THEME_REFRESH, "gooarchy-theme-refresh")
-            refresh = subprocess.run([str(refresh_path)], capture_output=True, text=True)
-            if refresh.returncode != 0:
-                detail = refresh.stderr.strip() or "theme refresh failed"
-                print(f"Gooarchy: {detail}", file=sys.stderr)
+        if not OMARCHY:
+            try:
+                refresh_path = helper_path(THEME_REFRESH, "gooarchy-theme-refresh")
+                refresh = subprocess.run([str(refresh_path)], capture_output=True, text=True)
+                if refresh.returncode != 0:
+                    detail = refresh.stderr.strip() or "theme refresh failed"
+                    print(f"Gooarchy: {detail}", file=sys.stderr)
+                    failed = True
+            except OSError as error:
+                print(f"Gooarchy: could not run theme refresh: {error}", file=sys.stderr)
                 failed = True
-        except OSError as error:
-            print(f"Gooarchy: could not run theme refresh: {error}", file=sys.stderr)
-            failed = True
         for name, step in STEPS:
             if (MARKERS / name).exists() or (OMARCHY and name in GOOARCHY_ONLY):
                 continue
