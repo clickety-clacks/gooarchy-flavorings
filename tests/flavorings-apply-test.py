@@ -638,6 +638,35 @@ with tempfile.TemporaryDirectory() as stage:
     expect("candidate package install succeeds in DESTDIR", candidate_installed,
            (candidate_install.stderr or candidate_install.stdout).strip()[-240:])
 
+    if candidate_installed:
+        wallpaper = Path(stage) / "usr/lib/gooarchy-flavorings/gooarchy-wallpaper"
+        wallpaper_lookup = wallpaper.with_name("gooarchy-theme-lookup")
+        fixture = Path(stage) / "wallpaper-fixture"
+        (fixture / "backgrounds").mkdir(parents=True)
+        (fixture / "backgrounds" / "first.webp").write_bytes(b"fixture")
+        wallpaper_lookup.write_text("#!/bin/sh\nprintf '%s\\n' \"$TEST_VARIANT\"\n")
+        wallpaper_lookup.chmod(0o755)
+
+        stub_bin = Path(stage) / "wallpaper-test-bin"
+        stub_bin.mkdir()
+        (stub_bin / "gsettings").write_text("#!/bin/sh\nexec sleep 3\n")
+        (stub_bin / "swaybg").write_text("#!/bin/sh\nexit 0\n")
+        (stub_bin / "gsettings").chmod(0o755)
+        (stub_bin / "swaybg").chmod(0o755)
+        with tempfile.TemporaryDirectory() as home:
+            wallpaper_env = {
+                "HOME": home,
+                "XDG_CONFIG_HOME": str(Path(home) / ".config"),
+                "PATH": f"{stub_bin}:/usr/bin:/bin",
+                "TEST_VARIANT": str(fixture),
+            }
+            wallpaper_result = subprocess.run(
+                [str(wallpaper)], env=wallpaper_env, capture_output=True, text=True, timeout=5,
+            )
+        expect("installed wallpaper executable exits through its entrypoint with isolated desktop stubs",
+               wallpaper_result.returncode == 0,
+               (wallpaper_result.stderr or wallpaper_result.stdout).strip()[-240:])
+
     notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
     notice_relative_path = os.path.join(
         "usr", "share", "licenses", "gooarchy-flavorings", notice_name,
