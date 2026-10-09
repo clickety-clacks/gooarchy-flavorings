@@ -506,19 +506,31 @@ with tempfile.TemporaryDirectory() as temp:
             "light": "/themes/new-light", "dark": "/themes/new-dark",
         }))
 
-    previous_omarchy = os.environ.get("OMARCHY_PATH")
+    runtime = root / "runtime"
+    runtime.mkdir()
+    hooks = root / "hooks" / "libexec"
+    hooks.mkdir(parents=True)
+    (hooks / "scottland-color-scheme").write_text("#!/bin/sh\nexit 0\n")
+    previous_environment = {
+        name: os.environ.get(name)
+        for name in ("OMARCHY_PATH", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "SCOTTLAND_HOOKS")
+    }
     try:
         os.environ["OMARCHY_PATH"] = str(omarchy)
+        os.environ["XDG_RUNTIME_DIR"] = str(runtime)
+        os.environ["WAYLAND_DISPLAY"] = "wayland-test"
+        os.environ["SCOTTLAND_HOOKS"] = str(hooks.parent)
         guarded_result = refresh.refresh(current, Path(repo) / "libexec" / "gooarchy-theme-lookup", guarded_lookup)
         missing_current = root / "missing-parent" / "gooarchy" / "current-theme"
         missing_result = refresh.refresh(
             missing_current, Path(repo) / "libexec" / "gooarchy-theme-lookup", guarded_lookup,
         )
     finally:
-        if previous_omarchy is None:
-            os.environ.pop("OMARCHY_PATH", None)
-        else:
-            os.environ["OMARCHY_PATH"] = previous_omarchy
+        for name, value in previous_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     expect("refresh leaves current-theme untouched when OMARCHY_PATH is an existing directory",
            guarded_result == 0
            and {theme_mode: os.readlink(current / theme_mode) for theme_mode in ("light", "dark")} == original_links
@@ -530,20 +542,48 @@ with tempfile.TemporaryDirectory() as temp:
            missing_result == 0 and not missing_current.parent.exists() and calls == [])
 
     missing_omarchy = root / "omarchy-not-installed"
-    os.environ["OMARCHY_PATH"] = str(missing_omarchy)
+    calls.clear()
+    palette_observations = []
+
+    def ordinary_refresh_run(command, **kwargs):
+        calls.append(tuple(command))
+        if tuple(command[-1:]) == ("once",):
+            palette_observations.append({
+                theme_mode: os.readlink(ordinary_current / theme_mode)
+                for theme_mode in ("light", "dark")
+            })
+        return completed(command, stdout=json.dumps({
+            "light": "/themes/new-light", "dark": "/themes/new-dark",
+        }))
+
+    previous_environment = {
+        name: os.environ.get(name)
+        for name in ("OMARCHY_PATH", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "SCOTTLAND_HOOKS")
+    }
     try:
+        os.environ["OMARCHY_PATH"] = str(missing_omarchy)
+        os.environ["XDG_RUNTIME_DIR"] = str(runtime)
+        os.environ["WAYLAND_DISPLAY"] = "wayland-test"
+        os.environ["SCOTTLAND_HOOKS"] = str(hooks.parent)
         ordinary_current = root / "ordinary" / "gooarchy" / "current-theme"
         ordinary_result = refresh.refresh(
-            ordinary_current, Path(repo) / "libexec" / "gooarchy-theme-lookup", guarded_lookup,
+            ordinary_current, Path(repo) / "libexec" / "gooarchy-theme-lookup", ordinary_refresh_run,
         )
     finally:
-        if previous_omarchy is None:
-            os.environ.pop("OMARCHY_PATH", None)
-        else:
-            os.environ["OMARCHY_PATH"] = previous_omarchy
+        for name, value in previous_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     expect("refresh runs normally when OMARCHY_PATH does not exist",
            ordinary_result == 0 and ordinary_current.is_dir()
-           and calls == [(str(Path(repo) / "libexec" / "gooarchy-theme-lookup"), "--pair")])
+           and calls == [
+               (str(Path(repo) / "libexec" / "gooarchy-theme-lookup"), "--pair"),
+               (str(hooks / "scottland-color-scheme"), "once"),
+           ]
+           and palette_observations == [{
+               "light": "/themes/new-light", "dark": "/themes/new-dark",
+           }])
 
 # make install copies catalogue entries verbatim and derives files without a second checkout.
 with tempfile.TemporaryDirectory() as destdir:
@@ -898,7 +938,12 @@ with tempfile.TemporaryDirectory() as stage:
         for name in ("gsettings", "swaybg"):
             (sync_bin / name).chmod(0o755)
         palette_command = hooks / "libexec" / "scottland-color-scheme"
-        palette_command.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$HOME/palette.log\"\n")
+        palette_command.write_text(
+            "#!/bin/sh\n"
+            "printf '%s|%s|%s\\n' \"$*\" \"$TEST_MODE\" "
+            "\"$(readlink \"$XDG_CONFIG_HOME/gooarchy/current-theme/dark\")\" "
+            ">>\"$HOME/palette.log\"\n"
+        )
         palette_command.chmod(0o755)
         sync_env = {
             "HOME": str(sync_home),
@@ -934,7 +979,7 @@ with tempfile.TemporaryDirectory() as stage:
                 synced = (sync_result.returncode == 0 and len(swaybg_calls) >= 2
                           and "old-dark/backgrounds/old.webp" in swaybg_calls[0]
                           and "new-dark/backgrounds/new.webp" in swaybg_calls[-1]
-                          and palette_calls == ["once"]
+                          and palette_calls == [f"once|dark|{themes / 'new-dark'}"]
                           and os.readlink(current / "dark") == str(themes / "new-dark"))
                 sync_detail = (sync_result.stderr or sync_result.stdout).strip()[-240:]
                 if not synced:
@@ -955,7 +1000,7 @@ with tempfile.TemporaryDirectory() as stage:
                 _, helper_error = wallpaper_helper.communicate(timeout=5)
         if helper_error.strip():
             sync_detail = f"{sync_detail}; helper stderr: {helper_error.strip()[-240:]}".strip("; ")
-        expect("refresh waits for live Scottland palette and wallpaper reapply before returning",
+        expect("same-mode theme selection commits current-theme before live palette reapply and wallpaper refresh",
                synced, sync_detail)
 
     notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
