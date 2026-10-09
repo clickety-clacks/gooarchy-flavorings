@@ -1006,30 +1006,29 @@ with tempfile.TemporaryDirectory() as stage:
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
                     env=sync_env, capture_output=True, text=True, timeout=8,
                 )
-                deadline = time.monotonic() + 5
-                while wallpaper_helper.poll() is None and time.monotonic() < deadline:
-                    swaybg_calls = (sync_home / "swaybg.log").read_text().splitlines()
-                    if any("new-dark/backgrounds/new.webp" in call for call in swaybg_calls):
-                        break
-                    time.sleep(0.05)
                 swaybg_calls = (sync_home / "swaybg.log").read_text().splitlines()
                 palette_calls = (sync_home / "palette.log").read_text().splitlines()
+                request_path = runtime / "gooarchy-wallpaper.request"
+                ack_path = runtime / "gooarchy-wallpaper.ack"
+                request_token = request_path.read_text().strip() if request_path.is_file() else ""
+                ack_token = ack_path.read_text().strip() if ack_path.is_file() else ""
                 synced = (sync_result.returncode == 0 and len(swaybg_calls) >= 2
                           and "old-dark/backgrounds/old.webp" in swaybg_calls[0]
                           and "new-dark/backgrounds/new.webp" in swaybg_calls[-1]
+                          and request_token and ack_token == request_token
                           and palette_calls == [f"once|dark|{themes / 'new-dark'}"]
                           and os.readlink(current / "dark") == str(themes / "new-dark")
-                          and not any((runtime / name).exists() for name in (
-                              "gooarchy-wallpaper.lock", "gooarchy-wallpaper.request", "gooarchy-wallpaper.ack",
-                          )))
+                          and wallpaper_helper.poll() is None
+                          and (runtime / "gooarchy-wallpaper.lock").is_file())
                 sync_detail = (sync_result.stderr or sync_result.stdout).strip()[-240:]
                 if not synced:
                     sync_detail = (f"{sync_detail} rc={sync_result.returncode}; "
                                    f"wallpapers={swaybg_calls}; palette={palette_calls}; "
                                    f"dark={os.readlink(current / 'dark')}; "
+                                   f"request={request_token!r}; ack={ack_token!r}; "
                                    f"runtime={sorted(path.name for path in runtime.iterdir())}").strip()
             else:
-                sync_detail = "wallpaper helper did not start its theme polling loop"
+                sync_detail = "wallpaper helper did not start its refresh acknowledgement loop"
         except Exception as error:
             sync_detail = f"{type(error).__name__}: {error}"
         finally:
@@ -1042,7 +1041,7 @@ with tempfile.TemporaryDirectory() as stage:
                 _, helper_error = wallpaper_helper.communicate(timeout=5)
         if helper_error.strip():
             sync_detail = f"{sync_detail}; helper stderr: {helper_error.strip()[-240:]}".strip("; ")
-        expect("same-mode selection reapplies palette synchronously and wallpaper poll redraws committed target",
+        expect("same-mode refresh waits for wallpaper acknowledgement after redraw of committed target",
                synced, sync_detail)
 
     notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"

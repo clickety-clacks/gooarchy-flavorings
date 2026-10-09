@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Draw the selected theme and keep Strata and Chromium on the same variant."""
+import fcntl
 import os
 import select
 import signal
+import stat
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 LOOKUP = Path(__file__).with_name("gooarchy-theme-lookup")
@@ -12,6 +15,9 @@ INTEGRATIONS = Path(__file__).with_name("gooarchy-theme-integrations")
 IMAGE_SUFFIXES = {".webp", ".png", ".jpg", ".jpeg"}
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
 CURRENT_THEME = CONFIG_HOME / "gooarchy" / "current-theme"
+RUNTIME_LOCK = "gooarchy-wallpaper.lock"
+REFRESH_REQUEST = "gooarchy-wallpaper.request"
+REFRESH_ACK = "gooarchy-wallpaper.ack"
 
 
 def variant_path():
@@ -60,6 +66,57 @@ def current_theme_signature():
     return tuple(signature)
 
 
+def open_runtime_control():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not Path(runtime).is_dir():
+        return None, None, None
+    lock_path = Path(runtime) / RUNTIME_LOCK
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    lock_fd = os.open(lock_path, flags, 0o600)
+    try:
+        metadata = os.fstat(lock_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise RuntimeError(f"refusing unexpected wallpaper lock: {lock_path}")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(lock_fd)
+        raise RuntimeError("gooarchy-wallpaper is already running") from error
+    except BaseException:
+        os.close(lock_fd)
+        raise
+    runtime_path = Path(runtime)
+    return lock_fd, runtime_path / REFRESH_REQUEST, runtime_path / REFRESH_ACK
+
+
+def read_runtime_token(path):
+    if path is None:
+        return ""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return ""
+    with os.fdopen(fd, "r") as stream:
+        return stream.read(128).strip()
+
+
+def write_runtime_token(path, token):
+    if path is None:
+        return
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(token + "\n")
+            stream.flush()
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def stop_child(process):
     if process is None or process.poll() is not None:
         return
@@ -79,6 +136,7 @@ def main():
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, stop)
+    lock_fd, request_path, ack_path = open_runtime_control()
     monitor = None
     swaybg = None
     try:
@@ -88,18 +146,23 @@ def main():
         if swaybg.poll() is not None:
             raise RuntimeError("swaybg exited during wallpaper startup")
         theme_signature = current_theme_signature()
+        last_request = read_runtime_token(ack_path)
         update_integrations()
         while True:
             readers = [monitor.stdout] if monitor.stdout is not None else []
             ready, _, _ = select.select(readers, [], [], 1.0)
             redraw = False
+            request = read_runtime_token(request_path)
+            requested = bool(request and request != last_request)
+            if requested:
+                redraw = True
             if monitor.stdout is not None and monitor.stdout in ready:
                 if not monitor.stdout.readline():
                     monitor.stdout.close()
-                    monitor.stdout = None  # keep polling current-theme links if the monitor exits
+                    monitor.stdout = None  # keep the wallpaper, but continue servicing refresh requests
                 else:
                     redraw = True
-            elif swaybg.poll() is not None:
+            elif swaybg.poll() is not None and not redraw:
                 break
             new_signature = current_theme_signature()
             if new_signature != theme_signature:
@@ -112,12 +175,19 @@ def main():
                 swaybg = draw()
                 if swaybg.poll() is not None:
                     raise RuntimeError("swaybg exited during wallpaper refresh")
-                update_integrations()
+                integrations_updated = update_integrations()
+                if requested:
+                    if not integrations_updated:
+                        raise RuntimeError("theme app integrations failed during wallpaper refresh")
+                    write_runtime_token(ack_path, request)
+                    last_request = request
         if swaybg is not None:
             swaybg.wait()
     finally:
         stop_child(monitor)
         stop_child(swaybg)
+        if lock_fd is not None:
+            os.close(lock_fd)
     return 0
 
 

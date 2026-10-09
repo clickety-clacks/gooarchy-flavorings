@@ -3,8 +3,10 @@
 import fcntl
 import json
 import os
+import stat
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -12,6 +14,9 @@ LOOKUP = Path(__file__).with_name("gooarchy-theme-lookup")
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
 CURRENT_THEME = CONFIG_HOME / "gooarchy" / "current-theme"
 MODES = ("light", "dark")
+WALLPAPER_RUNTIME_LOCK = "gooarchy-wallpaper.lock"
+WALLPAPER_REFRESH_REQUEST = "gooarchy-wallpaper.request"
+WALLPAPER_REFRESH_ACK = "gooarchy-wallpaper.ack"
 
 
 def _sync_directory(path):
@@ -36,6 +41,78 @@ def _reapply_scottland_palette(run):
     if result.returncode != 0:
         detail = result.stderr.strip() or "command returned a failure status"
         raise RuntimeError(f"Scottland color-scheme reapply failed: {detail}")
+
+
+def _refresh_running_wallpaper():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not Path(runtime).is_dir():
+        return
+    runtime_path = Path(runtime)
+    lock_path = runtime_path / WALLPAPER_RUNTIME_LOCK
+    try:
+        lock_fd = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return
+    try:
+        metadata = os.fstat(lock_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise RuntimeError(f"refusing unexpected wallpaper lock: {lock_path}")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            helper_running = True
+        else:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            helper_running = False
+    finally:
+        os.close(lock_fd)
+    if not helper_running:
+        return
+
+    request_path = runtime_path / WALLPAPER_REFRESH_REQUEST
+    ack_path = runtime_path / WALLPAPER_REFRESH_ACK
+    token = uuid.uuid4().hex
+    temp = request_path.with_name(f".{request_path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(token + "\n")
+            stream.flush()
+        os.replace(temp, request_path)
+    except BaseException:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            ack_fd = os.open(ack_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            acknowledged = False
+        else:
+            with os.fdopen(ack_fd, "r") as stream:
+                acknowledged = stream.read(128).strip() == token
+        if acknowledged:
+            return
+        try:
+            active_fd = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            raise RuntimeError("running wallpaper exited before completing its refresh")
+        try:
+            try:
+                fcntl.flock(active_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                fcntl.flock(active_fd, fcntl.LOCK_UN)
+                raise RuntimeError("running wallpaper exited before completing its refresh")
+        finally:
+            os.close(active_fd)
+        time.sleep(0.05)
+    raise RuntimeError("running wallpaper did not complete its refresh within five seconds")
 
 
 def _prepare_location(current):
@@ -94,6 +171,7 @@ def refresh(current_theme=CURRENT_THEME, lookup=LOOKUP, run=subprocess.run):
                 except FileNotFoundError:
                     pass
         _reapply_scottland_palette(run)
+        _refresh_running_wallpaper()
     finally:
         os.close(lock_fd)
     return 0
