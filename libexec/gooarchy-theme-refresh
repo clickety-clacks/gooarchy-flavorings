@@ -45,7 +45,7 @@ def _reapply_scottland_palette(run):
 
 def _refresh_running_wallpaper():
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime or not Path(runtime).is_dir():
+    if not runtime or not Path(runtime).is_dir() or not os.environ.get("WAYLAND_DISPLAY"):
         return
     runtime_path = Path(runtime)
     lock_path = runtime_path / WALLPAPER_RUNTIME_LOCK

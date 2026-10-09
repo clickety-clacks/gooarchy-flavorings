@@ -7,7 +7,8 @@ commands it calls (gsettings, dconf, xdg-user-dirs-update, pgrep). No desktop, n
 Covered: existing private files keep mode 0600 (and their contents); new private files are created
 0600; a symlinked config is left alone and reported; an app that's running is deferred; an
 explicitly set color scheme (even "default") is kept; an interrupted write leaves the old file and
-no temporary file; two runs at once leave valid files. The package install places the unchanged
+no temporary file; two runs at once leave valid files. Theme refresh waits for the running wallpaper
+helper to redraw the selected background before returning. The package install places the unchanged
 scoped notice at its expected path and preserves installed theme entries verbatim to their source.
 
 On Omarchy (a stand-in OMARCHY_PATH): the wallpaper hook starts nothing; the color scheme, Chromium
