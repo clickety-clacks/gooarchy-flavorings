@@ -991,7 +991,6 @@ with tempfile.TemporaryDirectory() as stage:
         wallpaper_helper = subprocess.Popen(
             [str(wallpaper)], env=sync_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        wallpaper_lock = runtime / "gooarchy-wallpaper.lock"
         deadline = time.monotonic() + 5
         while (not (sync_home / "swaybg.log").exists() and wallpaper_helper.poll() is None
                and time.monotonic() < deadline):
@@ -999,27 +998,38 @@ with tempfile.TemporaryDirectory() as stage:
         synced = False
         sync_detail = ""
         try:
-            if wallpaper_lock.exists() and (sync_home / "swaybg.log").exists() \
-                    and wallpaper_helper.poll() is None:
+            if (sync_home / "swaybg.log").exists() and wallpaper_helper.poll() is None:
+                # Let startup capture the original links before changing the selection.
+                time.sleep(1.2)
                 selection.write_text("new\n")
                 sync_result = subprocess.run(
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
                     env=sync_env, capture_output=True, text=True, timeout=8,
                 )
+                deadline = time.monotonic() + 5
+                while wallpaper_helper.poll() is None and time.monotonic() < deadline:
+                    swaybg_calls = (sync_home / "swaybg.log").read_text().splitlines()
+                    if any("new-dark/backgrounds/new.webp" in call for call in swaybg_calls):
+                        break
+                    time.sleep(0.05)
                 swaybg_calls = (sync_home / "swaybg.log").read_text().splitlines()
                 palette_calls = (sync_home / "palette.log").read_text().splitlines()
                 synced = (sync_result.returncode == 0 and len(swaybg_calls) >= 2
                           and "old-dark/backgrounds/old.webp" in swaybg_calls[0]
                           and "new-dark/backgrounds/new.webp" in swaybg_calls[-1]
                           and palette_calls == [f"once|dark|{themes / 'new-dark'}"]
-                          and os.readlink(current / "dark") == str(themes / "new-dark"))
+                          and os.readlink(current / "dark") == str(themes / "new-dark")
+                          and not any((runtime / name).exists() for name in (
+                              "gooarchy-wallpaper.lock", "gooarchy-wallpaper.request", "gooarchy-wallpaper.ack",
+                          )))
                 sync_detail = (sync_result.stderr or sync_result.stdout).strip()[-240:]
                 if not synced:
                     sync_detail = (f"{sync_detail} rc={sync_result.returncode}; "
                                    f"wallpapers={swaybg_calls}; palette={palette_calls}; "
-                                   f"dark={os.readlink(current / 'dark')}").strip()
+                                   f"dark={os.readlink(current / 'dark')}; "
+                                   f"runtime={sorted(path.name for path in runtime.iterdir())}").strip()
             else:
-                sync_detail = "wallpaper helper did not start its runtime refresh monitor"
+                sync_detail = "wallpaper helper did not start its theme polling loop"
         except Exception as error:
             sync_detail = f"{type(error).__name__}: {error}"
         finally:
@@ -1032,7 +1042,7 @@ with tempfile.TemporaryDirectory() as stage:
                 _, helper_error = wallpaper_helper.communicate(timeout=5)
         if helper_error.strip():
             sync_detail = f"{sync_detail}; helper stderr: {helper_error.strip()[-240:]}".strip("; ")
-        expect("same-mode theme selection commits current-theme before live palette reapply and wallpaper refresh",
+        expect("same-mode selection reapplies palette synchronously and wallpaper poll redraws committed target",
                synced, sync_detail)
 
     notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
