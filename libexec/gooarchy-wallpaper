@@ -4,6 +4,8 @@ changes (org.gnome.desktop.interface color-scheme, which gooarchy-theme sets). E
 session does: swaybg ending on its own means the compositor is gone."""
 import select
 import subprocess
+from pathlib import Path
+import sys
 
 THEMES = "/usr/share/gooarchy-flavorings/themes"
 
@@ -19,10 +21,19 @@ def draw():
                              f"{THEMES}/watercolor-dream-{mode()}/background.webp"])
 
 
+def update_integrations():
+    helper = Path(__file__).with_name("gooarchy-theme-integrations")
+    result = subprocess.run([str(helper), mode()], capture_output=True, text=True)
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        print(f"Gooarchy: theme app integrations failed: {detail}", file=sys.stderr)
+
+
 monitor = subprocess.Popen(["gsettings", "monitor", "org.gnome.desktop.interface", "color-scheme"],
                            stdout=subprocess.PIPE, text=True)
 swaybg = draw()
 try:
+    update_integrations()
     while True:
         ready, _, _ = select.select([monitor.stdout], [], [], 1.0)
         if ready:
@@ -31,6 +42,7 @@ try:
             swaybg.terminate()
             swaybg.wait()
             swaybg = draw()
+            update_integrations()
         elif swaybg.poll() is not None:
             break
     swaybg.wait()
