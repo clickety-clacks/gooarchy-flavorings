@@ -4,6 +4,9 @@
   gooarchy-flavorings-apply            apply what this user hasn't had yet, reporting each step
   gooarchy-flavorings-apply --session  the same, quietly, from the session's autostart
   gooarchy-flavorings-apply --list     show which defaults have been applied for this user
+  gooarchy-flavorings-apply --override-report
+                                       on Omarchy, list the flavorings that change what this user
+                                       had in Scottland's override report (O20)
 
 Each default is applied at most once per user (a marker in ~/.local/state/gooarchy/flavorings
 remembers it), so changing it back later sticks. A default only fills a setting that isn't set:
@@ -16,11 +19,18 @@ a private temporary file and moved into place in one step, so an interrupted run
 file intact; a file that is a symlink (managed elsewhere, e.g. by a dotfiles tool) is left alone
 and reported; settings of an app that is running are applied at a later login instead; and two
 runs at once wait for each other.
+
+On Omarchy, the look is Omarchy's: the color scheme, Chromium and Ghostty defaults are not applied
+(and not marked, so they stay unapplied). Every flavoring that does change something this user had
+is listed in Scottland's override report through a fragment in
+~/.config/scottland/override-report.d/, rewritten only when its contents change.
 """
+from contextlib import contextmanager
 import fcntl
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -34,6 +44,9 @@ STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "gooar
 MARKERS = STATE / "flavorings"
 SHARE = Path("/usr/share/gooarchy-flavorings")
 SESSION = "--session" in sys.argv
+OMARCHY = Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy").is_dir()
+REPORT = CONFIG / "scottland" / "override-report.d" / "gooarchy-flavorings.txt"
+SET_BY_GOOARCHY = "set by Gooarchy\n"  # a marker's contents when the step changed the setting
 
 
 class Declined(Exception):
@@ -204,6 +217,7 @@ def claude_code():
         return True
     data["preferredNotifChannel"] = "terminal_bell"
     write_file(config, json.dumps(data, indent=2) + "\n")
+    set_by_gooarchy("claude-code")
     say("Claude Code: rings the terminal bell when it needs you.")
     return True
 
@@ -219,6 +233,7 @@ def codex():
     if text is None:
         write_file(config, "# Gooarchy flavorings: ring the terminal bell when Codex needs you.\n[tui]\n" +
                    "".join(f"{k} = {v}\n" for k, v in wanted.items()))
+        set_by_gooarchy("codex")
         say("Codex: rings the terminal bell when it needs you.")
         return True
     tui = tomllib.loads(text).get("tui", {})
@@ -240,6 +255,7 @@ def codex():
     else:
         text = text.rstrip("\n") + "\n\n# Gooarchy flavorings: ring the terminal bell when Codex needs you.\n[tui]\n" + lines
     write_file(config, text)
+    set_by_gooarchy("codex")
     say("Codex: rings the terminal bell when it needs you.")
     return True
 
@@ -247,12 +263,226 @@ def codex():
 def file_manager():
     """Strata opens folders (system default in a Scottland session); report a user's own choice."""
     user = CONFIG / "mimeapps.list"
+    if OMARCHY and not desktop_file(STRATA):
+        return True  # Strata isn't installed: folders open as they did, and there is nothing to report
     if user.exists():
         match = re.search(r"^inode/directory=(.*)$", user.read_text(), re.M)
         if match and "Strata" not in match.group(1):
             report(f"kept your folder handler ({match.group(1)}); Gooarchy's is Strata.")
     return True
 
+
+def set_by_gooarchy(name):
+    """Remember that this step changed the setting, for the override report."""
+    MARKERS.mkdir(parents=True, exist_ok=True)
+    (MARKERS / name).write_text(SET_BY_GOOARCHY)
+
+
+def still_set_by_gooarchy(name, current, ours):
+    marker = MARKERS / name
+    return current == ours and marker.is_file() and marker.read_text() == SET_BY_GOOARCHY
+
+
+# Scottland's Omarchy override report (O20) -----------------------------------------------------
+
+STRATA = "io.github.lgse.Strata.desktop"
+SCOTTLAND_DESKTOPS = ("scottland", "wayfire", "wlroots")  # Scottland's XDG_CURRENT_DESKTOP
+MIME_NAMES = {"inode/directory": "Folders", "text/html": "Web pages",
+              "x-scheme-handler/http": "http links", "x-scheme-handler/https": "https links"}
+
+
+def xdg_dirs(variable, default):
+    return [Path(d) for d in (os.environ.get(variable) or default).split(":") if d]
+
+
+def data_dirs():
+    return [Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share"),
+            *xdg_dirs("XDG_DATA_DIRS", "/usr/local/share:/usr/share")]
+
+
+def desktop_file(desktop_id):
+    """The installed desktop file for DESKTOP_ID, or None."""
+    for directory in data_dirs():
+        path = directory / "applications" / desktop_id
+        if path.is_file():
+            return path
+    return None
+
+
+def app_name(desktop_id):
+    path = desktop_file(desktop_id)
+    match = re.search(r"^Name=(.+)$", path.read_text(errors="replace"), re.M) if path else None
+    return f"{match.group(1).strip()} ({desktop_id})" if match else desktop_id
+
+
+def mimeapps_lists():
+    """The mimeapps.list files of a Scottland session, in the XDG lookup order."""
+    directories = [CONFIG, *xdg_dirs("XDG_CONFIG_DIRS", "/etc/xdg"),
+                   *(d / "applications" for d in data_dirs())]
+    return [directory / name for directory in directories
+            for name in (*(f"{desktop}-mimeapps.list" for desktop in SCOTTLAND_DESKTOPS), "mimeapps.list")]
+
+
+def default_apps(path):
+    """PATH's [Default Applications]: {mime type: [desktop ids]}."""
+    defaults, section = {}, None
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return defaults
+    for line in lines:
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[Default Applications]" and "=" in line and not line.startswith("#"):
+            mime, apps = (part.strip() for part in line.split("=", 1))
+            defaults.setdefault(mime, [app for app in apps.split(";") if app])
+    return defaults
+
+
+@contextmanager
+def xdg_config_dirs_without(excluded):
+    """Mirror XDG config dirs' MIME lists, omitting one package list for an effective-default query."""
+    excluded = Path(excluded).resolve()
+    with tempfile.TemporaryDirectory(prefix="gooarchy-mimeapps-") as scratch:
+        mirrors = []
+        for index, source in enumerate(xdg_dirs("XDG_CONFIG_DIRS", "/etc/xdg")):
+            mirror = Path(scratch) / str(index)
+            mirror.mkdir()
+            if source.is_dir():
+                for path in source.iterdir():
+                    if not path.is_file() or (path.name != "mimeapps.list" and not path.name.endswith("-mimeapps.list")):
+                        continue
+                    if path.resolve() != excluded:
+                        shutil.copyfile(path, mirror / path.name)
+            mirrors.append(str(mirror))
+        yield ":".join(mirrors)
+
+
+def gio_default_app(mime, config_dirs=None):
+    """Return the effective handler GIO selects for a Scottland session, or None if there is none."""
+    env = dict(os.environ)
+    env["XDG_CURRENT_DESKTOP"] = "Scottland:Wayfire:wlroots"
+    env["LC_ALL"] = "C"
+    if config_dirs is not None:
+        env["XDG_CONFIG_DIRS"] = config_dirs
+    result = subprocess.run(["gio", "mime", mime], env=env, capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    if result.returncode:
+        if "No default application" in output:
+            return None
+        raise RuntimeError(f"gio mime {mime} failed (exit {result.returncode}): {output.strip()}")
+    match = re.search(r"^Default application for .+?:\s*(\S+)\s*$", output, re.M)
+    if match:
+        return match.group(1)
+    if "No default application" in output:
+        return None
+    raise RuntimeError(f"gio mime {mime} did not identify its default application (exit {result.returncode})")
+
+
+def mime_entries():
+    lists = mimeapps_lists()
+    ours = next((path for path in lists if path.name == "scottland-mimeapps.list" and path.parent != CONFIG
+                 and path.is_file()), None)
+    if not ours:
+        return []
+    entries = []
+    with xdg_config_dirs_without(ours) as config_dirs:
+        for mime, apps in default_apps(ours).items():
+            now = gio_default_app(mime)
+            was = gio_default_app(mime, config_dirs)
+            if now in apps and now != was:
+                entries.append((MIME_NAMES.get(mime, mime), app_name(was) if was else "No default app",
+                                f"{app_name(now)} in a Scottland session"))
+    return entries
+
+
+def bell_entries():
+    entries = []
+    try:
+        claude = json.loads(read_text(HOME / ".claude.json") or "{}").get("preferredNotifChannel")
+    except (Declined, ValueError, AttributeError):
+        claude = None
+    if still_set_by_gooarchy("claude-code", claude, "terminal_bell"):
+        entries.append(("Claude Code notifications", "Claude Code's own default notification channel",
+                        "Rings the terminal bell (preferredNotifChannel = terminal_bell in ~/.claude.json)"))
+    try:
+        method = tomllib.loads(read_text(HOME / ".codex" / "config.toml") or "").get("tui", {}).get("notification_method")
+    except (Declined, ValueError, AttributeError):
+        method = None
+    if still_set_by_gooarchy("codex", method, "bel"):
+        entries.append(("Codex notifications", "Codex's own default notification method",
+                        "Rings the terminal bell (tui.notification_method = \"bel\" in ~/.codex/config.toml)"))
+    return entries
+
+
+def user_sets(files, pattern):
+    matcher = re.compile(pattern, re.M)
+    for path in files:
+        try:
+            for line in path.read_text(errors="replace").splitlines():
+                # A comment that mentions a setting does not express the user's choice.
+                statement = line.split("#", 1)[0]
+                if matcher.search(statement):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def title_entries():
+    entries = []
+    if shutil.which("tmux"):
+        tmux = [HOME / ".tmux.conf", CONFIG / "tmux" / "tmux.conf", HOME / ".config" / "tmux" / "tmux.conf"]
+        if not user_sets(tmux, r"^\s*set(-option)?\s+(-\w+\s+)*set-titles\s"):
+            entries.append(("tmux set-titles", "Off (tmux's default)",
+                            "On: tmux sets the terminal's title (/etc/tmux.conf)"))
+        if not user_sets(tmux, r"^\s*set(-option)?\s+(-\w+\s+)*set-titles-string\s"):
+            entries.append(("tmux set-titles-string", "tmux's default title",
+                            "The session and host, \"#S on #h\" (/etc/tmux.conf)"))
+    if shutil.which("mosh-client"):
+        startup = [HOME / name for name in (".profile", ".bash_profile", ".bash_login", ".bashrc",
+                                            ".zshenv", ".zprofile", ".zshrc")]
+        startup += sorted((CONFIG / "environment.d").glob("*.conf"))
+        if not user_sets(startup,
+                         r"^\s*(?:(?:export|readonly)\s+|(?:declare|typeset)\s+-x\s+)?MOSH_TITLE_NOPREFIX="):
+            entries.append(("mosh window titles", "mosh puts [mosh] before the remote title",
+                            "The remote title alone (MOSH_TITLE_NOPREFIX=1, /etc/profile.d/gooarchy-flavorings.sh)"))
+    return entries
+
+
+REPORT_GROUPS = (
+    ("Gooarchy: tools ring the terminal bell",
+     "Claude Code and Codex ring the terminal bell when they need you; Scottland shows it as window attention.",
+     bell_entries),
+    ("Gooarchy: terminal titles",
+     "Gooarchy's system settings for tmux and mosh make window titles show where you are.",
+     title_entries),
+    ("Gooarchy: default apps",
+     "In a Scottland session Gooarchy's default apps come before Omarchy's; your own choices still win.",
+     mime_entries),
+)
+
+
+def override_report():
+    """Write (or remove) this user's fragment of Scottland's override report, only when it changes."""
+    text = ""
+    for heading, reason, entries in REPORT_GROUPS:
+        items = entries()
+        if items:
+            text += f"## {heading}\nReason: {reason}\n\n"
+            text += "".join(f"- Keys: {keys}\n  Was: {was}\n  Now: {now}\n  Origin: Gooarchy flavoring\n\n"
+                            for keys, was, now in items)
+    text = text.rstrip("\n") + "\n" if text else ""
+    old = REPORT.read_text() if REPORT.is_file() and not REPORT.is_symlink() else None
+    if text and text != old:
+        write_file(REPORT, text, new_mode=0o644)
+    elif not text and old is not None:
+        REPORT.unlink()
+    REPORT.parent.mkdir(parents=True, exist_ok=True)  # Scottland watches it once it exists
+
+
+GOOARCHY_ONLY = {"color-scheme", "chromium", "ghostty"}  # the look; on Omarchy it's Omarchy's
 
 STEPS = [("folders", folders), ("color-scheme", color_scheme), ("chromium", chromium),
          ("ghostty", ghostty), ("claude-code", claude_code), ("codex", codex),
@@ -263,13 +493,20 @@ def main():
     MARKERS.mkdir(parents=True, exist_ok=True)
     if "--list" in sys.argv:
         for name, _ in STEPS:
-            print(f"{name}: {'applied' if (MARKERS / name).exists() else 'not yet'}")
+            if OMARCHY and name in GOOARCHY_ONLY:
+                print(f"{name}: Omarchy's own")
+            else:
+                print(f"{name}: {'applied' if (MARKERS / name).exists() else 'not yet'}")
         return 0
     with open(STATE / "flavorings.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time (installer and session autostart)
+        fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time (installer, session autostart, config build)
+        if "--override-report" in sys.argv:
+            if OMARCHY:
+                override_report()
+            return 0
         failed = False
         for name, step in STEPS:
-            if (MARKERS / name).exists():
+            if (MARKERS / name).exists() or (OMARCHY and name in GOOARCHY_ONLY):
                 continue
             try:
                 if step():
@@ -279,6 +516,12 @@ def main():
                 (MARKERS / name).touch()
             except Exception as error:  # one default failing shouldn't stop the others
                 print(f"Gooarchy: couldn't apply the {name} default: {error}", file=sys.stderr)
+                failed = True
+        if OMARCHY:
+            try:
+                override_report()
+            except Exception as error:
+                print(f"Gooarchy: couldn't update the override report: {error}", file=sys.stderr)
                 failed = True
     return 1 if failed and not SESSION else 0
 
