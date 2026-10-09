@@ -417,10 +417,14 @@ def bell_entries():
 
 
 def user_sets(files, pattern):
+    matcher = re.compile(pattern, re.M)
     for path in files:
         try:
-            if re.search(pattern, path.read_text(errors="replace"), re.M):
-                return True
+            for line in path.read_text(errors="replace").splitlines():
+                # A comment that mentions a setting does not express the user's choice.
+                statement = line.split("#", 1)[0]
+                if matcher.search(statement):
+                    return True
         except OSError:
             pass
     return False
@@ -440,7 +444,8 @@ def title_entries():
         startup = [HOME / name for name in (".profile", ".bash_profile", ".bash_login", ".bashrc",
                                             ".zshenv", ".zprofile", ".zshrc")]
         startup += sorted((CONFIG / "environment.d").glob("*.conf"))
-        if not user_sets(startup, r"MOSH_TITLE_NOPREFIX"):
+        if not user_sets(startup,
+                         r"^\s*(?:(?:export|readonly)\s+|(?:declare|typeset)\s+-x\s+)?MOSH_TITLE_NOPREFIX="):
             entries.append(("mosh window titles", "mosh puts [mosh] before the remote title",
                             "The remote title alone (MOSH_TITLE_NOPREFIX=1, /etc/profile.d/gooarchy-flavorings.sh)"))
     return entries

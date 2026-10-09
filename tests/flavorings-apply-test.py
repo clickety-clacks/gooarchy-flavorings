@@ -413,6 +413,7 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
     write(os.path.join(home, ".claude.json"), json.dumps({"preferredNotifChannel": "terminal_bell"}))
     write(os.path.join(home, ".stubs", "tmux"), "#!/bin/sh\n", executable=True)
     write(os.path.join(home, ".stubs", "mosh-client"), "#!/bin/sh\n", executable=True)
+    write(os.path.join(home, ".profile"), "# export MOSH_TITLE_NOPREFIX=0\n")
     stubs(os.path.join(home, ".stubs"))
     r = apply(home, omarchy=omarchy)
     text = read(os.path.join(home, ".config", "scottland", "override-report.d", "gooarchy-flavorings.txt")) or ""
@@ -421,6 +422,13 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
            "- Keys: Web pages\n  Was: No default app\n  Now: Chromium (chromium.desktop) in a Scottland session" in text, text)
     expect("Omarchy: tmux and mosh titles the user doesn't set are reported",
            all(f"- Keys: {k}\n" in text for k in ("tmux set-titles", "tmux set-titles-string", "mosh window titles")), text)
+    expect("Omarchy: a commented mosh setting does not hide the package override",
+           "- Keys: mosh window titles\n" in text, text)
+    write(os.path.join(home, ".profile"), "export MOSH_TITLE_NOPREFIX=0\n")
+    apply(home, "--override-report", omarchy=omarchy)
+    text = read(os.path.join(home, ".config", "scottland", "override-report.d", "gooarchy-flavorings.txt")) or ""
+    expect("Omarchy: an active mosh setting is respected",
+           "- Keys: mosh window titles\n" not in text, text)
 
 with tempfile.TemporaryDirectory() as home:
     apply(home)
