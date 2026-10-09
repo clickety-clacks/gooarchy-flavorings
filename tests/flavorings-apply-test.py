@@ -7,7 +7,8 @@ commands it calls (gsettings, dconf, xdg-user-dirs-update, pgrep). No desktop, n
 Covered: existing private files keep mode 0600 (and their contents); new private files are created
 0600; a symlinked config is left alone and reported; an app that's running is deferred; an
 explicitly set color scheme (even "default") is kept; an interrupted write leaves the old file and
-no temporary file; two runs at once leave valid files.
+no temporary file; two runs at once leave valid files. The package install places the unchanged
+scoped notice at its expected path and preserves installed theme entries verbatim to their source.
 """
 import importlib.machinery
 import importlib.util
@@ -134,6 +135,87 @@ with tempfile.TemporaryDirectory() as home:
         p.wait()
     data = json.load(open(os.path.join(home, ".claude.json")))
     expect("concurrent runs leave valid files", data == {"keep": 1, "preferredNotifChannel": "terminal_bell"}, data)
+
+# Snapshot paths without following symlinks. Comparing these tuples checks installed modes,
+# file bytes and symlink targets, as well as file types and directory modes.
+def tree_snapshot(root):
+    entries = {}
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for name in sorted(directories + files):
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, root)
+            metadata = os.lstat(path)
+            entry_mode = stat.S_IMODE(metadata.st_mode)
+            if os.path.islink(path):
+                entries[relative] = ("symlink", entry_mode, os.readlink(path))
+            elif stat.S_ISDIR(metadata.st_mode):
+                entries[relative] = ("directory", entry_mode)
+            elif stat.S_ISREG(metadata.st_mode):
+                with open(path, "rb") as stream:
+                    entries[relative] = ("file", entry_mode, stream.read())
+            else:
+                entries[relative] = ("other", entry_mode, stat.S_IFMT(metadata.st_mode))
+    return entries
+
+
+with tempfile.TemporaryDirectory() as stage:
+    candidate_install = subprocess.run(
+        ["make", "install", f"DESTDIR={stage}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    candidate_installed = candidate_install.returncode == 0
+    expect("candidate package install succeeds in DESTDIR", candidate_installed,
+           (candidate_install.stderr or candidate_install.stdout).strip()[-240:])
+
+    notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
+    notice_relative_path = os.path.join(
+        "usr", "share", "licenses", "gooarchy-flavorings", notice_name,
+    )
+    installed_notice_path = os.path.join(stage, notice_relative_path)
+    source_notice_path = os.path.join(repo, "licenses", notice_name)
+    if candidate_installed:
+        expect("CC0 notice is installed at its scoped path",
+               os.path.isfile(installed_notice_path) and not os.path.islink(installed_notice_path),
+               notice_relative_path)
+        installed_notice = tree_snapshot(stage).get(notice_relative_path)
+        with open(source_notice_path, "rb") as source_notice:
+            expected_notice = source_notice.read()
+        expect("installed CC0 legal text matches source bytes",
+               installed_notice is not None and installed_notice[0] == "file"
+               and installed_notice[2] == expected_notice)
+        expect("installed CC0 notice mode is 0644",
+               installed_notice is not None and installed_notice[0] == "file"
+               and installed_notice[1] == 0o644,
+               oct(installed_notice[1]) if installed_notice and installed_notice[0] == "file" else "missing")
+
+        themes_match = True
+        theme_details = []
+        for theme in ("watercolor-dream-light", "watercolor-dream-dark"):
+            source_theme = os.path.join(repo, "themes", theme)
+            installed_theme = os.path.join(stage, "usr", "share", "gooarchy-flavorings", "themes", theme)
+            source_entries = tree_snapshot(source_theme)
+            installed_entries = tree_snapshot(installed_theme) if os.path.isdir(installed_theme) else {}
+            extra_entries = set(installed_entries) - set(source_entries)
+            expected_generated = {"background.webp", "ghostty"} - set(source_entries)
+            generated_present = all(installed_entries.get(item, (None,))[0] == "file"
+                                    for item in ("background.webp", "ghostty"))
+            changed_entries = [path for path, entry in source_entries.items()
+                               if installed_entries.get(path) != entry]
+            same = (generated_present and not changed_entries
+                    and extra_entries == expected_generated)
+            if not same:
+                themes_match = False
+                theme_details.append({"theme": theme,
+                                      "changed": changed_entries[:10],
+                                      "extra": sorted(extra_entries)})
+        expect("installed Watercolor Dream theme entries remain verbatim to source",
+               themes_match, theme_details)
+    else:
+        expect("CC0 notice is installed at its scoped path", False, "candidate DESTDIR install did not complete")
+        expect("installed CC0 legal text matches source bytes", False, "candidate DESTDIR install did not complete")
+        expect("installed CC0 notice mode is 0644", False, "candidate DESTDIR install did not complete")
+        expect("installed Watercolor Dream theme entries remain verbatim to source",
+               False, "candidate DESTDIR install did not complete")
 
 print(f"{'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)
