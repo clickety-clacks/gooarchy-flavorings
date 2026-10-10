@@ -155,6 +155,8 @@ def main():
             request = read_runtime_token(request_path)
             requested = bool(request and request != last_request)
             if requested:
+                # Process each token once; a failed refresh stays unacknowledged for its caller.
+                last_request = request
                 redraw = True
             if monitor.stdout is not None and monitor.stdout in ready:
                 if not monitor.stdout.readline():
@@ -176,11 +178,8 @@ def main():
                 if swaybg.poll() is not None:
                     raise RuntimeError("swaybg exited during wallpaper refresh")
                 integrations_updated = update_integrations()
-                if requested:
-                    if not integrations_updated:
-                        raise RuntimeError("theme app integrations failed during wallpaper refresh")
+                if requested and integrations_updated:
                     write_runtime_token(ack_path, request)
-                    last_request = request
         if swaybg is not None:
             swaybg.wait()
     finally:

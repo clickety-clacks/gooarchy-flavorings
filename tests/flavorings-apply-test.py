@@ -860,6 +860,8 @@ with tempfile.TemporaryDirectory() as stage:
             "selection=$config_home/gooarchy/theme\n"
             "if [ -r \"$selection\" ]; then IFS= read -r slug < \"$selection\"; else slug=default; fi\n"
             "printf '%s\\n' \"$slug\" >>\"$HOME/integration.log\"\n"
+            "if [ -f \"$HOME/fail-integrations\" ] && [ \"$slug\" = broken ]; then "
+            "echo 'simulated app integration failure' >&2; exit 1; fi\n"
         )
         integration_helper.chmod(0o755)
 
@@ -968,7 +970,7 @@ with tempfile.TemporaryDirectory() as stage:
         themes = sync_root / "themes"
         for directory in (sync_home, runtime, hooks / "libexec"):
             directory.mkdir(parents=True, exist_ok=True)
-        for slug in ("old", "new"):
+        for slug in ("old", "new", "broken"):
             for theme_mode in ("light", "dark"):
                 backgrounds = themes / f"{slug}-{theme_mode}" / "backgrounds"
                 backgrounds.mkdir(parents=True)
@@ -979,6 +981,8 @@ with tempfile.TemporaryDirectory() as stage:
         selection = sync_config / "gooarchy" / "theme"
         selection.parent.mkdir(parents=True)
         selection.write_text("old\n")
+        (sync_home / "theme-mode").write_text("dark\n")
+        (sync_home / "gsettings-events").write_text("")
         current = selection.parent / "current-theme"
         current.mkdir()
         for theme_mode in ("light", "dark"):
@@ -990,15 +994,16 @@ with tempfile.TemporaryDirectory() as stage:
             "from pathlib import Path\n"
             "root = Path(os.environ['TEST_THEME_ROOT'])\n"
             "slug = (Path(os.environ['XDG_CONFIG_HOME']) / 'gooarchy' / 'theme').read_text().strip()\n"
+            "mode = (Path(os.environ['HOME']) / 'theme-mode').read_text().strip()\n"
             "if sys.argv[1:] == ['--pair']:\n"
             "    print(json.dumps({mode: str(root / f'{slug}-{mode}') for mode in ('light', 'dark')}))\n"
             "else:\n"
-            "    print(root / f\"{slug}-{os.environ['TEST_MODE']}\")\n"
+            "    print(root / f\"{slug}-{mode}\")\n"
         )
         wallpaper_lookup.chmod(0o755)
         sync_bin = sync_root / "bin"
         sync_bin.mkdir()
-        (sync_bin / "gsettings").write_text("#!/bin/sh\nexec sleep 30\n")
+        (sync_bin / "gsettings").write_text("#!/bin/sh\nexec tail -n 0 -f \"$HOME/gsettings-events\"\n")
         (sync_bin / "swaybg").write_text(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$HOME/swaybg.log\"\nexec sleep 30\n",
         )
@@ -1024,19 +1029,23 @@ with tempfile.TemporaryDirectory() as stage:
             "TEST_MODE": "dark",
         }
         single_wallpaper_log = sync_home / "swaybg.log"
+        startup_integration_log = sync_home / "integration.log"
         wallpaper_helper = subprocess.Popen(
             [str(wallpaper)], env=sync_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         deadline = time.monotonic() + 5
-        while (not single_wallpaper_log.exists() and wallpaper_helper.poll() is None
-               and time.monotonic() < deadline):
+        startup_ready = False
+        while wallpaper_helper.poll() is None and time.monotonic() < deadline:
+            if (startup_integration_log.is_file()
+                    and startup_integration_log.read_text().splitlines() == ["old"]):
+                startup_ready = True
+                break
             time.sleep(0.01)
         synced = False
         sync_detail = ""
         try:
-            if single_wallpaper_log.exists() and wallpaper_helper.poll() is None:
-                # Let startup capture the original links before changing the selection.
-                time.sleep(1.2)
+            if startup_ready and wallpaper_helper.poll() is None:
+                # Startup integrations run after the initial theme-link signature is captured.
                 selection.write_text("new\n")
                 sync_result = subprocess.run(
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
@@ -1071,7 +1080,7 @@ with tempfile.TemporaryDirectory() as stage:
                                    f"request={request_token!r}; ack={ack_token!r}; "
                                    f"runtime={sorted(path.name for path in runtime.iterdir())}").strip()
             else:
-                sync_detail = "wallpaper helper did not start its refresh acknowledgement loop"
+                sync_detail = "wallpaper helper did not log completed startup integrations before the deadline"
         except Exception as error:
             sync_detail = f"{type(error).__name__}: {error}"
         finally:
@@ -1086,6 +1095,95 @@ with tempfile.TemporaryDirectory() as stage:
             sync_detail = f"{sync_detail}; helper stderr: {helper_error.strip()[-240:]}".strip("; ")
         expect("same-mode refresh waits for wallpaper acknowledgement after redraw of committed target",
                synced, sync_detail)
+
+        failure_home = sync_root / "failure-home"
+        failure_runtime = sync_root / "failure-runtime"
+        failure_home.mkdir()
+        failure_runtime.mkdir()
+        failure_config = failure_home / ".config"
+        failure_selection = failure_config / "gooarchy" / "theme"
+        failure_selection.parent.mkdir(parents=True)
+        failure_selection.write_text("old\n")
+        failure_current = failure_selection.parent / "current-theme"
+        failure_current.mkdir()
+        for theme_mode in ("light", "dark"):
+            os.symlink(themes / f"old-{theme_mode}", failure_current / theme_mode)
+        (failure_home / "theme-mode").write_text("dark\n")
+        (failure_home / "gsettings-events").write_text("")
+        failure_env = {
+            **sync_env,
+            "HOME": str(failure_home),
+            "XDG_CONFIG_HOME": str(failure_config),
+            "XDG_RUNTIME_DIR": str(failure_runtime),
+        }
+        failure_wallpaper_log = failure_home / "swaybg.log"
+        failure_integration_log = failure_home / "integration.log"
+        failure_helper = subprocess.Popen(
+            [str(wallpaper)], env=failure_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        failure_detail = ""
+        failure_survived = False
+        mode_followed = False
+        failure_stderr = ""
+        try:
+            deadline = time.monotonic() + 5
+            while failure_helper.poll() is None and time.monotonic() < deadline:
+                if (failure_integration_log.is_file()
+                        and failure_integration_log.read_text().splitlines() == ["old"]):
+                    break
+                time.sleep(0.01)
+            if (failure_helper.poll() is None and failure_integration_log.is_file()
+                    and failure_integration_log.read_text().splitlines() == ["old"]):
+                (failure_home / "fail-integrations").write_text("fail\n")
+                failure_selection.write_text("broken\n")
+                failed_refresh = subprocess.run(
+                    [str(refresh_entry)], env=failure_env, capture_output=True, text=True, timeout=8,
+                )
+                request_path = failure_runtime / "gooarchy-wallpaper.request"
+                ack_path = failure_runtime / "gooarchy-wallpaper.ack"
+                request_token = request_path.read_text().strip() if request_path.is_file() else ""
+                ack_token = ack_path.read_text().strip() if ack_path.is_file() else ""
+                swaybg_calls = failure_wallpaper_log.read_text().splitlines()
+                failure_survived = (
+                    failed_refresh.returncode != 0 and failure_helper.poll() is None
+                    and request_token and ack_token != request_token
+                    and any("old-dark/backgrounds/old.webp" in line for line in swaybg_calls)
+                    and any("broken-dark/backgrounds/broken.webp" in line for line in swaybg_calls)
+                )
+                failure_detail = (f"refresh_rc={failed_refresh.returncode}; "
+                                  f"alive={failure_helper.poll() is None}; "
+                                  f"request={request_token!r}; ack={ack_token!r}; "
+                                  f"wallpapers={swaybg_calls}")
+
+                (failure_home / "fail-integrations").unlink()
+                (failure_home / "theme-mode").write_text("light\n")
+                with (failure_home / "gsettings-events").open("a") as events:
+                    events.write("prefer-light\n")
+                deadline = time.monotonic() + 5
+                while failure_helper.poll() is None and time.monotonic() < deadline:
+                    current_calls = failure_wallpaper_log.read_text().splitlines()
+                    if any("broken-light/backgrounds/broken.webp" in line for line in current_calls):
+                        mode_followed = True
+                        break
+                    time.sleep(0.01)
+            else:
+                failure_detail = "wallpaper helper did not reach the startup integration log barrier"
+        except Exception as error:
+            failure_detail = f"{type(error).__name__}: {error}"
+        finally:
+            if failure_helper.poll() is None:
+                failure_helper.terminate()
+            try:
+                _, failure_stderr = failure_helper.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                failure_helper.kill()
+                _, failure_stderr = failure_helper.communicate(timeout=5)
+        if failure_stderr.strip():
+            failure_detail = f"{failure_detail}; helper stderr: {failure_stderr.strip()[-240:]}".strip("; ")
+        expect("failed requested integrations leave wallpaper alive without acknowledging the refresh",
+               failure_survived, failure_detail)
+        expect("wallpaper continues following mode changes after a failed requested refresh",
+               mode_followed, failure_detail)
 
     notice_name = "CC0-1.0-Watercolor-Dream-themes-only.txt"
     notice_relative_path = os.path.join(

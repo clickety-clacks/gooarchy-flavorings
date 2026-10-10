@@ -32,5 +32,9 @@ policy integration; its copyright and permission notice ship under `LICENSES/`.
 
 ## Ghostty theme location
 
-On the adapter version, Ghostty reads from Omarchy. On Gooarchy, it needs to read from the
-Scottland equivalent.
+Mike's exact ruling (`dr_f74a125b`):
+
+> on the adapter version, ghostty reads from omarchy. on gooarchy, that needs to read from the scottland equivalent
+
+Accordingly, Ghostty reads from Omarchy on the adapter version and from the Scottland equivalent
+on Gooarchy.
