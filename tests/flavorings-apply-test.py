@@ -172,6 +172,18 @@ def completed(command, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(command, returncode, stdout, stderr)
 
 
+def write_minimal_colors(variant):
+    required = (
+        "accent", "background", "lighter_background", "foreground", "light_foreground",
+        "bright_foreground", "muted", "selection", "selection_foreground", "red", "green",
+        "yellow", "blue", "magenta", "cyan", "bright_red", "bright_green", "bright_yellow",
+        "bright_blue", "bright_magenta", "bright_cyan",
+    )
+    (variant / "colors.toml").write_text(
+        "".join(f'{key} = "#112233"\n' for key in required)
+    )
+
+
 # The resolver is the only reader of the theme selection record and follows portal precedence.
 with tempfile.TemporaryDirectory() as temp:
     empty_selection = Path(temp) / "missing"
@@ -647,6 +659,8 @@ with tempfile.TemporaryDirectory() as temp:
     omarchy = root / "omarchy"
     omarchy.mkdir()
     refresh_attempts = []
+    original_config = apply_module.CONFIG
+    original_report = apply_module.REPORT
     original_state = apply_module.STATE
     original_markers = apply_module.MARKERS
     original_steps = apply_module.STEPS
@@ -654,6 +668,8 @@ with tempfile.TemporaryDirectory() as temp:
     original_helper_path = apply_module.helper_path
     try:
         apply_module.OMARCHY = omarchy.is_dir()
+        apply_module.CONFIG = root / "config"
+        apply_module.REPORT = apply_module.CONFIG / "scottland" / "override-report.d" / "gooarchy-flavorings.txt"
         apply_module.STATE = root / "state" / "gooarchy"
         apply_module.MARKERS = apply_module.STATE / "flavorings"
         apply_module.STEPS = []
@@ -665,6 +681,8 @@ with tempfile.TemporaryDirectory() as temp:
         apply_module.helper_path = record_refresh_attempt
         result = apply_module.main()
     finally:
+        apply_module.CONFIG = original_config
+        apply_module.REPORT = original_report
         apply_module.STATE = original_state
         apply_module.MARKERS = original_markers
         apply_module.STEPS = original_steps
@@ -878,6 +896,7 @@ with tempfile.TemporaryDirectory() as stage:
         fixture = Path(stage) / "wallpaper-fixture"
         (fixture / "backgrounds").mkdir(parents=True)
         (fixture / "backgrounds" / "first.webp").write_bytes(b"fixture")
+        write_minimal_colors(fixture)
         wallpaper_lookup.write_text(
             "#!/bin/sh\nprintf 'lookup\\n' >>\"$HOME/wallpaper-calls.log\"\n"
             "printf '%s\\n' \"$TEST_VARIANT\"\n"
@@ -945,6 +964,7 @@ with tempfile.TemporaryDirectory() as stage:
                 backgrounds = themes / f"{slug}-{theme_mode}" / "backgrounds"
                 backgrounds.mkdir(parents=True)
                 (backgrounds / f"{slug}.webp").write_bytes(b"fixture")
+                write_minimal_colors(backgrounds.parent)
 
         sync_config = Path(sync_home) / ".config"
         selection = sync_config / "gooarchy" / "theme"
