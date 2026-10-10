@@ -1605,6 +1605,14 @@ esac
     with open(sudo, "w") as f:
         f.write("#!/bin/sh\nexit 0\n")
     os.chmod(sudo, 0o755)
+    pgrep = os.path.join(bindir, "pgrep")
+    with open(pgrep, "w") as f:
+        f.write("#!/bin/sh\nexit 1\n")
+    os.chmod(pgrep, 0o755)
+    chromium = os.path.join(bindir, "chromium")
+    with open(chromium, "w") as f:
+        f.write('#!/bin/sh\nprintf "invoked\\n" >"$HOME/chromium-invoked"\nexit 1\n')
+    os.chmod(chromium, 0o755)
 
 
 def theme_run(home, arg=None, solar=None):
@@ -1633,6 +1641,8 @@ with tempfile.TemporaryDirectory() as home:
            and "keeping that choice through periodic checks" in r.stderr
            and "changing it only at the next scheduled sunrise or sunset" in r.stderr
            and "only if you want to keep one mode permanently" in r.stderr, r.stderr)
+    expect("Sunlight notice fixture never launches Chromium",
+           not os.path.exists(os.path.join(home, "chromium-invoked")), r.stderr)
 
 with tempfile.TemporaryDirectory() as home:
     r = theme_run(home, "dark", solar="[solar]\nenabled = true\n")
