@@ -1601,6 +1601,10 @@ esac
     with open(path, "w") as f:
         f.write(gsettings)
     os.chmod(path, 0o755)
+    sudo = os.path.join(bindir, "sudo")
+    with open(sudo, "w") as f:
+        f.write("#!/bin/sh\nexit 0\n")
+    os.chmod(sudo, 0o755)
 
 
 def theme_run(home, arg=None, solar=None):
