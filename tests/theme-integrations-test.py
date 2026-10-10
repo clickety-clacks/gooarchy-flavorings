@@ -232,6 +232,24 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-strata-invalid-") as temporary
     expect("invalid settings remain byte-for-byte unchanged",
            settings.read_text() == 'mode = "theme"\ntheme = [unterminated\n')
 
+with tempfile.TemporaryDirectory(prefix="gooarchy-strata-update-failure-") as temporary:
+    home = Path(temporary)
+    home.mkdir(exist_ok=True)
+    configure(home)
+    with patch.object(integrations, "palette", return_value={"accent": "#123456"}), \
+            patch.object(integrations, "update_strata", side_effect=OSError("cannot write Strata theme")), \
+            patch.object(integrations, "update_chromium", return_value=True) as update_chromium:
+        result = integrations.apply("dark")
+    expect("a failed Strata update fails the integration even when Chromium succeeds",
+           result == 1 and update_chromium.call_args.args == ("#123456",), result)
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-strata-user-choice-skip-"):
+    with patch.object(integrations, "palette", return_value={"accent": "#123456"}), \
+            patch.object(integrations, "update_strata", return_value=False), \
+            patch.object(integrations, "update_chromium", return_value=True):
+        result = integrations.apply("dark")
+    expect("an intentional Strata user-choice skip does not fail theme integration", result == 0, result)
+
 with tempfile.TemporaryDirectory(prefix="gooarchy-chromium-policy-") as temporary:
     home = Path(temporary)
     _, managed = configure(home)

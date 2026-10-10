@@ -235,15 +235,18 @@ def apply(mode=None):
     except (OSError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
         print(f"Gooarchy: couldn't read the selected theme: {error}", file=sys.stderr)
         return 1
+    strata_ok = True
     try:
         update_strata(values)
     except (OSError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
         print(f"Gooarchy: couldn't update Strata's Gooarchy theme: {error}", file=sys.stderr)
+        strata_ok = False
     color = values.get("accent", "").lower()
     if not re.fullmatch(r"#[0-9a-f]{6}", color):
         print("Gooarchy: the selected theme accent is not a six-digit hex color", file=sys.stderr)
         return 1
-    return 0 if update_chromium(color) else 1
+    chromium_ok = update_chromium(color)
+    return 0 if strata_ok and chromium_ok else 1
 
 
 def main():
