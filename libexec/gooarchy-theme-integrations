@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-SHARE = Path("/usr/share/gooarchy-flavorings")
+LOOKUP = Path(__file__).with_name("gooarchy-theme-lookup")
 OMARCHY = Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy").is_dir()
 STRATA_DEFAULT_THEME = "tokyo-night"
 STRATA_THEME_ID = "gooarchy-watercolor"
@@ -57,15 +57,29 @@ def atomic_write(path, text, mode=0o600):
         raise
 
 
-def palette(mode):
-    source = SHARE / "themes" / f"watercolor-dream-{mode}" / "colors.toml"
-    values = tomllib.loads(source.read_text())
-    return values
+def palette(mode=None):
+    """Read colors only from the variant resolved by gooarchy-theme-lookup."""
+    if mode is not None and mode not in ("light", "dark"):
+        raise ValueError("expected light or dark")
+    command = [str(LOOKUP)]
+    if mode is not None:
+        command.append(mode)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"theme lookup failed: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "lookup returned no variant"
+        raise RuntimeError(f"theme lookup failed: {detail}")
+    variant = Path(result.stdout.strip())
+    if not variant.is_absolute():
+        raise RuntimeError("theme lookup returned a non-absolute variant path")
+    return tomllib.loads((variant / "colors.toml").read_text())
 
 
 def strata_theme(values):
     fields = {
-        "name": "Watercolor Dream",
+        "name": "Gooarchy",
         "background": values["background"],
         "surface": values["lighter_background"],
         "text": values["foreground"],
@@ -73,11 +87,11 @@ def strata_theme(values):
         "danger": values["red"],
         "muted": values["muted"],
         "highlight": values["selection"],
-        "border": values["dark_background"],
+        "border": values.get("dark_background", values["background"]),
         "dim_text": values["muted"],
         "syntax_keyword": values["magenta"],
         "syntax_string": values["green"],
-        "syntax_constant": values["orange"],
+        "syntax_constant": values.get("orange", values["yellow"]),
         "syntax_type": values["yellow"],
         "syntax_preprocessor": values["cyan"],
     }
@@ -118,7 +132,7 @@ def replace_top_level_theme(text, theme_id):
     return "".join(lines)
 
 
-def update_strata(mode):
+def update_strata(resolved):
     """Use Gooarchy colors only for Strata's default or already selected Gooarchy theme."""
     strata_dir = CONFIG / "strata"
     settings = strata_dir / "settings.toml"
@@ -149,7 +163,8 @@ def update_strata(mode):
         except (OSError, IndexError):
             return False
 
-    rendered = strata_theme(palette(mode))
+    values = palette(resolved) if isinstance(resolved, str) else resolved
+    rendered = strata_theme(values)
     if not theme_file.exists() or theme_file.read_text() != rendered:
         atomic_write(theme_file, rendered, mode=0o644)
 
@@ -209,33 +224,36 @@ def update_chromium(color):
     return True
 
 
-def apply(mode):
-    if mode not in ("light", "dark"):
+def apply(mode=None):
+    if mode is not None and mode not in ("light", "dark"):
         raise ValueError("expected light or dark")
     # Keep exactly the same Omarchy marker used by Gooarchy flavorings' shared guard.
     if OMARCHY:
         return 0
     try:
         values = palette(mode)
-    except (OSError, KeyError, tomllib.TOMLDecodeError) as error:
-        print(f"Gooarchy: couldn't read the Watercolor Dream {mode} theme: {error}", file=sys.stderr)
+    except (OSError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
+        print(f"Gooarchy: couldn't read the selected theme: {error}", file=sys.stderr)
         return 1
+    strata_ok = True
     try:
-        update_strata(mode)
-    except (OSError, KeyError, tomllib.TOMLDecodeError) as error:
-        print(f"Gooarchy: couldn't update Strata's Watercolor Dream theme: {error}", file=sys.stderr)
+        update_strata(values)
+    except (OSError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
+        print(f"Gooarchy: couldn't update Strata's Gooarchy theme: {error}", file=sys.stderr)
+        strata_ok = False
     color = values.get("accent", "").lower()
     if not re.fullmatch(r"#[0-9a-f]{6}", color):
-        print("Gooarchy: the Watercolor Dream accent is not a six-digit hex color", file=sys.stderr)
+        print("Gooarchy: the selected theme accent is not a six-digit hex color", file=sys.stderr)
         return 1
-    return 0 if update_chromium(color) else 1
+    chromium_ok = update_chromium(color)
+    return 0 if strata_ok and chromium_ok else 1
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("light", "dark"):
-        print("usage: gooarchy-theme-integrations light|dark", file=sys.stderr)
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] not in ("light", "dark")):
+        print("usage: gooarchy-theme-integrations [light|dark]", file=sys.stderr)
         return 2
-    return apply(sys.argv[1])
+    return apply(sys.argv[1] if len(sys.argv) == 2 else None)
 
 
 if __name__ == "__main__":

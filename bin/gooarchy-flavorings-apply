@@ -43,6 +43,8 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "gooarchy"
 MARKERS = STATE / "flavorings"
 SHARE = Path("/usr/share/gooarchy-flavorings")
+THEME_LOOKUP = Path("/usr/lib/gooarchy-flavorings/gooarchy-theme-lookup")
+THEME_REFRESH = Path("/usr/lib/gooarchy-flavorings/gooarchy-theme-refresh")
 SESSION = "--session" in sys.argv
 OMARCHY = Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy").is_dir()
 REPORT = CONFIG / "scottland" / "override-report.d" / "gooarchy-flavorings.txt"
@@ -65,6 +67,12 @@ def report(message):
     STATE.mkdir(parents=True, exist_ok=True)
     with open(STATE / "reports.log", "a") as f:
         f.write(line + "\n")
+
+
+def helper_path(installed, name):
+    """Let the repository test run its source helpers without an install root."""
+    source = Path(__file__).resolve().parent.parent / "libexec" / name
+    return source if source.is_file() else installed
 
 
 def write_file(path, text, new_mode=0o600):
@@ -146,7 +154,7 @@ def folders():
 
 
 def color_scheme():
-    """Watercolor Dream light, unless the user already set a color scheme (any value)."""
+    """Set light mode unless the user already chose a color scheme (any value)."""
     # dconf read prints the user's own value, or nothing when the key was never set.
     explicit = subprocess.run(["dconf", "read", "/org/gnome/desktop/interface/color-scheme"],
                               capture_output=True, text=True).stdout.strip()
@@ -154,7 +162,7 @@ def color_scheme():
         report(f"kept your color scheme ({explicit.strip(chr(39))}); gooarchy-theme light|dark switches it.")
     else:
         gsettings("set", "org.gnome.desktop.interface", "color-scheme", "prefer-light")
-        say("Set the desktop to Watercolor Dream light (gooarchy-theme dark switches).")
+        say("Set the desktop to light mode (gooarchy-theme dark switches).")
     if sunlight_enabled():
         say("Scottland's Sunlight schedule is on: it switches between light and dark with the sun once it "
             "knows where you are (GeoClue, saved coordinates, or an IP lookup). Turn it off in Scottland "
@@ -186,18 +194,22 @@ def chromium():
 
 
 def ghostty():
-    """Ghostty uses the Watercolor Dream theme, light or dark with the desktop."""
-    themes = SHARE / "themes"
-    line = f"theme = light:{themes}/watercolor-dream-light/ghostty,dark:{themes}/watercolor-dream-dark/ghostty"
+    """Ghostty follows the selected theme through the per-user current-theme location."""
+    current_theme = (CONFIG / "gooarchy" / "current-theme").absolute()
+    line = f"theme = light:{current_theme}/light/ghostty,dark:{current_theme}/dark/ghostty"
     config = CONFIG / "ghostty" / "config"
     text = read_text(config)
     if text is not None:
         if not re.search(r"^\s*theme\s*=", text, re.M):
             report(f"kept your Ghostty config as it is; for Gooarchy's theme, add: {line}")
         return True
-    write_file(config, "# Gooarchy flavorings: the Watercolor Dream theme, light or dark with the desktop.\n"
+    if (current_theme.is_symlink() or not current_theme.is_dir()
+            or not all((current_theme / mode).is_symlink() for mode in ("light", "dark"))):
+        print("Gooarchy: current theme is not ready; Ghostty setup will retry next session.", file=sys.stderr)
+        return False
+    write_file(config, "# Gooarchy flavorings: follow the selected theme and desktop mode.\n"
                        f"{line}\n", new_mode=0o644)
-    say("Ghostty: Watercolor Dream theme.")
+    say("Ghostty: set to follow the selected theme.")
     return True
 
 
@@ -490,7 +502,6 @@ STEPS = [("folders", folders), ("color-scheme", color_scheme), ("chromium", chro
 
 
 def main():
-    MARKERS.mkdir(parents=True, exist_ok=True)
     if "--list" in sys.argv:
         for name, _ in STEPS:
             if OMARCHY and name in GOOARCHY_ONLY:
@@ -498,6 +509,7 @@ def main():
             else:
                 print(f"{name}: {'applied' if (MARKERS / name).exists() else 'not yet'}")
         return 0
+    MARKERS.mkdir(parents=True, exist_ok=True)
     with open(STATE / "flavorings.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time (installer, session autostart, config build)
         if "--override-report" in sys.argv:
@@ -505,6 +517,17 @@ def main():
                 override_report()
             return 0
         failed = False
+        if not OMARCHY:
+            try:
+                refresh_path = helper_path(THEME_REFRESH, "gooarchy-theme-refresh")
+                refresh = subprocess.run([str(refresh_path)], capture_output=True, text=True)
+                if refresh.returncode != 0:
+                    detail = refresh.stderr.strip() or "theme refresh failed"
+                    print(f"Gooarchy: {detail}", file=sys.stderr)
+                    failed = True
+            except OSError as error:
+                print(f"Gooarchy: could not run theme refresh: {error}", file=sys.stderr)
+                failed = True
         for name, step in STEPS:
             if (MARKERS / name).exists() or (OMARCHY and name in GOOARCHY_ONLY):
                 continue

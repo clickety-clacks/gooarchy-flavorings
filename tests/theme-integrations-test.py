@@ -14,6 +14,9 @@ from unittest.mock import patch
 
 
 repo = Path(__file__).resolve().parents[1]
+_test_environment = tempfile.TemporaryDirectory(prefix="gooarchy-theme-integrations-test-")
+os.environ["XDG_CONFIG_HOME"] = str(Path(_test_environment.name) / "config")
+os.environ["OMARCHY_PATH"] = str(Path(_test_environment.name) / "omarchy-not-installed")
 helper_path = repo / "libexec" / "gooarchy-theme-integrations"
 loader = importlib.machinery.SourceFileLoader("gooarchy_theme_integrations", str(helper_path))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -32,7 +35,7 @@ def configure(home):
     config = home / ".config"
     managed = home / "system" / "etc" / "chromium" / "policies" / "managed"
     integrations.CONFIG = config
-    integrations.SHARE = repo
+    integrations.LOOKUP = repo / "libexec" / "gooarchy-theme-lookup"
     integrations.POLICY_DIR = managed
     integrations.POLICY_FILE = managed / "gooarchy-theme.json"
     integrations.OMARCHY = False
@@ -96,8 +99,8 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-strata-default-") as temporary
     settings.write_text(original)
     expect("Strata default selection becomes Gooarchy's theme", integrations.update_strata("light"))
     light = (strata / "themes" / "gooarchy-watercolor.toml").read_text()
-    expect("Strata light theme has Watercolor Dream colors",
-           'name = "Watercolor Dream"' in light and 'background = "#F4F4ED"' in light
+    expect("Strata light theme has selected Watercolor Dream colors",
+           'name = "Gooarchy"' in light and 'background = "#F4F4ED"' in light
            and 'accent = "#3a5690"' in light, light)
     updated = settings.read_text()
     expect("only Strata's theme selection changes", updated == original.replace(
@@ -118,6 +121,77 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-strata-first-run-") as tempora
            settings.read_text() == 'mode = "theme"\ntheme = "gooarchy-watercolor"\n', settings.read_text())
     expect("first-run theme remains one custom theme entry",
            len(list((config / "strata" / "themes").glob("*.toml"))) == 1)
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-catalogue-integration-") as temporary:
+    root = Path(temporary)
+    home = root / "home"
+    home.mkdir()
+    config, _ = configure(home)
+    selection = config / "gooarchy" / "theme"
+    selection.parent.mkdir(parents=True)
+    selection.write_text("plain\n")
+    themes = root / "themes"
+    themes.mkdir()
+    required = (
+        "accent", "background", "lighter_background", "foreground", "light_foreground",
+        "bright_foreground", "muted", "selection", "selection_foreground", "red", "green",
+        "yellow", "blue", "magenta", "cyan", "bright_red", "bright_green", "bright_yellow",
+        "bright_blue", "bright_magenta", "bright_cyan",
+    )
+    colors = {
+        "plain-dark": {key: "#112233" for key in required},
+        "plain-light": {key: "#445566" for key in required},
+        "other-dark": {key: "#778899" for key in required},
+        "other-light": {key: "#aabbcc" for key in required},
+    }
+    for variant, values in colors.items():
+        directory = themes / variant
+        directory.mkdir()
+        (directory / "colors.toml").write_text(
+            "".join(f'{key} = "{value}"\n' for key, value in values.items())
+        )
+    lookup = root / "gooarchy-theme-lookup"
+    lookup.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "config = Path(os.environ['XDG_CONFIG_HOME'])\n"
+        "slug = (config / 'gooarchy' / 'theme').read_text().strip()\n"
+        "mode = sys.argv[1] if len(sys.argv) == 2 else os.environ['GOOARCHY_TEST_MODE']\n"
+        "print(Path(os.environ['GOOARCHY_TEST_THEMES']) / f'{slug}-{mode}')\n"
+    )
+    lookup.chmod(0o755)
+    integrations.LOOKUP = lookup
+    config.mkdir(exist_ok=True)
+    environment = {
+        "XDG_CONFIG_HOME": str(config),
+        "GOOARCHY_TEST_THEMES": str(themes),
+        "GOOARCHY_TEST_MODE": "dark",
+    }
+    colors_seen = []
+    with patch.dict(os.environ, environment), patch.object(
+            integrations, "update_chromium", side_effect=lambda color: colors_seen.append(color) or True):
+        with patch.object(integrations.sys, "argv", [str(helper_path)]):
+            current_mode_result = integrations.main()
+        expect("the no-argument integration resolves the selected theme in current mode",
+               current_mode_result == 0)
+        dark_theme = (config / "strata" / "themes" / "gooarchy-watercolor.toml").read_text()
+        expect("Strata and Chromium read the selected dark catalogue colors",
+               'background = "#112233"' in dark_theme and 'accent = "#112233"' in dark_theme
+               and colors_seen == ["#112233"], dark_theme)
+        expect("optional Strata colors fall back to required catalogue keys",
+               'border = "#112233"' in dark_theme and 'syntax_constant = "#112233"' in dark_theme,
+               dark_theme)
+
+        selection.write_text("other\n")
+        with patch.object(integrations.sys, "argv", [str(helper_path), "light"]):
+            light_mode_result = integrations.main()
+        expect("an explicit light integration follows a different selected catalogue theme",
+               light_mode_result == 0)
+        light_theme = (config / "strata" / "themes" / "gooarchy-watercolor.toml").read_text()
+        expect("Strata and Chromium refresh from the new selection without per-theme edits",
+               'background = "#aabbcc"' in light_theme and 'accent = "#aabbcc"' in light_theme
+               and colors_seen[-1] == "#aabbcc", light_theme)
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-strata-user-theme-") as temporary:
     home = Path(temporary)
@@ -157,6 +231,24 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-strata-invalid-") as temporary
     expect("invalid Strata settings are preserved", not integrations.update_strata("light"))
     expect("invalid settings remain byte-for-byte unchanged",
            settings.read_text() == 'mode = "theme"\ntheme = [unterminated\n')
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-strata-update-failure-") as temporary:
+    home = Path(temporary)
+    home.mkdir(exist_ok=True)
+    configure(home)
+    with patch.object(integrations, "palette", return_value={"accent": "#123456"}), \
+            patch.object(integrations, "update_strata", side_effect=OSError("cannot write Strata theme")), \
+            patch.object(integrations, "update_chromium", return_value=True) as update_chromium:
+        result = integrations.apply("dark")
+    expect("a failed Strata update fails the integration even when Chromium succeeds",
+           result == 1 and update_chromium.call_args.args == ("#123456",), result)
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-strata-user-choice-skip-"):
+    with patch.object(integrations, "palette", return_value={"accent": "#123456"}), \
+            patch.object(integrations, "update_strata", return_value=False), \
+            patch.object(integrations, "update_chromium", return_value=True):
+        result = integrations.apply("dark")
+    expect("an intentional Strata user-choice skip does not fail theme integration", result == 0, result)
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-chromium-policy-") as temporary:
     home = Path(temporary)
