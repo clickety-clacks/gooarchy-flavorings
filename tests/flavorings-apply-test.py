@@ -853,6 +853,15 @@ with tempfile.TemporaryDirectory() as stage:
         wallpaper = Path(stage) / "usr/lib/gooarchy-flavorings/gooarchy-wallpaper"
         wallpaper_lookup = wallpaper.with_name("gooarchy-theme-lookup")
         refresh_entry = wallpaper.with_name("gooarchy-theme-refresh")
+        integration_helper = wallpaper.with_name("gooarchy-theme-integrations")
+        integration_helper.write_text(
+            "#!/bin/sh\n"
+            "config_home=${XDG_CONFIG_HOME:-$HOME/.config}\n"
+            "selection=$config_home/gooarchy/theme\n"
+            "if [ -r \"$selection\" ]; then IFS= read -r slug < \"$selection\"; else slug=default; fi\n"
+            "printf '%s\\n' \"$slug\" >>\"$HOME/integration.log\"\n"
+        )
+        integration_helper.chmod(0o755)
 
         refresh_home = Path(stage) / "refresh-home"
         refresh_config = refresh_home / ".config"
@@ -1038,6 +1047,7 @@ with tempfile.TemporaryDirectory() as stage:
                 redraw_at_return = any("new-dark/backgrounds/new.webp" in line
                                         for line in swaybg_calls[1:])
                 palette_calls = (sync_home / "palette.log").read_text().splitlines()
+                integration_calls = (sync_home / "integration.log").read_text().splitlines()
                 request_path = runtime / "gooarchy-wallpaper.request"
                 ack_path = runtime / "gooarchy-wallpaper.ack"
                 request_token = request_path.read_text().strip() if request_path.is_file() else ""
@@ -1047,6 +1057,7 @@ with tempfile.TemporaryDirectory() as stage:
                           and redraw_at_return
                           and request_token and ack_token == request_token
                           and palette_calls == [f"once|dark|{themes / 'new-dark'}"]
+                          and integration_calls == ["old", "new"]
                           and os.readlink(current / "dark") == str(themes / "new-dark")
                           and wallpaper_helper.poll() is None
                           and (runtime / "gooarchy-wallpaper.lock").is_file())
@@ -1055,6 +1066,7 @@ with tempfile.TemporaryDirectory() as stage:
                     sync_detail = (f"{sync_detail} rc={sync_result.returncode}; "
                                    f"redraw_at_return={redraw_at_return}; "
                                    f"wallpapers={swaybg_calls}; palette={palette_calls}; "
+                                   f"integrations={integration_calls}; "
                                    f"dark={os.readlink(current / 'dark')}; "
                                    f"request={request_token!r}; ack={ack_token!r}; "
                                    f"runtime={sorted(path.name for path in runtime.iterdir())}").strip()
