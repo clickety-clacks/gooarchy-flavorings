@@ -10,6 +10,9 @@ explicitly set color scheme (even "default") is kept; an interrupted write leave
 no temporary file; two runs at once leave valid files. Theme refresh waits for the running wallpaper
 helper to redraw the selected background before returning. The package install places the unchanged
 scoped notice at its expected path and preserves installed theme entries verbatim to their source.
+Both setup/theme Sunlight notices say a manual theme pick leaves Sunlight on, holds through periodic
+checks, and changes only at the next scheduled transition; turning Sunlight off keeps one mode
+permanently.
 
 On Omarchy (a stand-in OMARCHY_PATH): the wallpaper hook starts nothing; the color scheme, Chromium
 and Ghostty are neither written nor marked; the config hook leaves out Super+Shift+F and B and adds
@@ -46,6 +49,7 @@ os.environ["OMARCHY_PATH"] = str(TEST_MISSING_OMARCHY)
 
 repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tool = os.path.join(repo, "bin", "gooarchy-flavorings-apply")
+theme_tool = os.path.join(repo, "bin", "gooarchy-theme")
 failures = 0
 
 
@@ -880,6 +884,11 @@ with tempfile.TemporaryDirectory() as home:
     expect("no temporary files left", not [n for n, _, fs in os.walk(home) for f in fs if f.endswith(".gooarchy")])
     expect("an unset color scheme gets Watercolor Dream light",
            "set org.gnome.desktop.interface color-scheme prefer-light" in open(os.path.join(home, "gsettings.log")).read())
+    expect("Sunlight-on setup note keeps Sunlight enabled through periodic checks",
+           "schedule stays on after a manual theme pick" in r.stdout
+           and "keeping that choice through periodic checks" in r.stdout
+           and "changing it only at the next scheduled sunrise or sunset" in r.stdout
+           and "only if you want to keep one mode permanently" in r.stdout, r.stdout)
     expect("setup leaves an unset text size unset (T2/T3)", not (Path(home) / ".test-text-scaling-factor").exists())
     expect("setup does not write the text-scaling key (T2)", not text_size_writes(home))
     default = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "text-scaling-factor"],
@@ -1575,6 +1584,78 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
     expect("Omarchy: the wallpaper hook starts nothing", r.returncode == 0 and not os.path.exists(started))
     subprocess.run([wallpaper], env=environment(home), capture_output=True, text=True)
     expect("Gooarchy: the wallpaper hook starts the wallpaper", os.path.exists(started))
+
+
+# gooarchy-theme: the mode commands keep their color-scheme behavior, and the Sunlight notice
+# follows ~/.config/scottland/solar.ini without suggesting an indefinite manual override.
+def theme_stubs(bindir):
+    os.makedirs(bindir, exist_ok=True)
+    gsettings = """#!/bin/sh
+state="$HOME/.gsettings-state"
+case "$1" in
+  get) printf "'%s'\\n" "$(cat "$state" 2>/dev/null || echo prefer-light)" ;;
+  set) printf "%s\\n" "$4" >"$state" ;;
+esac
+"""
+    path = os.path.join(bindir, "gsettings")
+    with open(path, "w") as f:
+        f.write(gsettings)
+    os.chmod(path, 0o755)
+    sudo = os.path.join(bindir, "sudo")
+    with open(sudo, "w") as f:
+        f.write("#!/bin/sh\nexit 0\n")
+    os.chmod(sudo, 0o755)
+    pgrep = os.path.join(bindir, "pgrep")
+    with open(pgrep, "w") as f:
+        f.write("#!/bin/sh\nexit 1\n")
+    os.chmod(pgrep, 0o755)
+    chromium = os.path.join(bindir, "chromium")
+    with open(chromium, "w") as f:
+        f.write('#!/bin/sh\nprintf "invoked\\n" >"$HOME/chromium-invoked"\nexit 1\n')
+    os.chmod(chromium, 0o755)
+
+
+def theme_run(home, arg=None, solar=None):
+    bindir = os.path.join(home, ".stubs")
+    theme_stubs(bindir)
+    if solar is not None:
+        solar_path = os.path.join(home, ".config", "scottland", "solar.ini")
+        os.makedirs(os.path.dirname(solar_path), exist_ok=True)
+        with open(solar_path, "w") as f:
+            f.write(solar)
+    env = {"HOME": home, "PATH": f"{bindir}:/usr/bin:/bin"}
+    args = [theme_tool] + ([arg] if arg else [])
+    return subprocess.run(args, env=env, capture_output=True, text=True)
+
+
+def gsettings_value(home):
+    path = os.path.join(home, ".gsettings-state")
+    return open(path).read().strip() if os.path.exists(path) else ""
+
+
+with tempfile.TemporaryDirectory() as home:
+    r = theme_run(home, "light", solar="[solar]\nenabled = true\n")
+    expect("light still sets prefer-light", gsettings_value(home) == "prefer-light", r.stdout + r.stderr)
+    expect("Sunlight-on theme note keeps Sunlight enabled through periodic checks",
+           "schedule stays on after a manual theme pick" in r.stderr
+           and "keeping that choice through periodic checks" in r.stderr
+           and "changing it only at the next scheduled sunrise or sunset" in r.stderr
+           and "only if you want to keep one mode permanently" in r.stderr, r.stderr)
+    expect("Sunlight notice fixture never launches Chromium",
+           not os.path.exists(os.path.join(home, "chromium-invoked")), r.stderr)
+
+with tempfile.TemporaryDirectory() as home:
+    r = theme_run(home, "dark", solar="[solar]\nenabled = true\n")
+    expect("dark still sets prefer-dark", gsettings_value(home) == "prefer-dark", r.stdout + r.stderr)
+
+with tempfile.TemporaryDirectory() as home:
+    theme_run(home, "dark", solar="[solar]\nenabled = true\n")
+    r = theme_run(home, "toggle", solar="[solar]\nenabled = true\n")
+    expect("toggle from dark still sets prefer-light", gsettings_value(home) == "prefer-light", r.stdout + r.stderr)
+
+with tempfile.TemporaryDirectory() as home:
+    r = theme_run(home, "light", solar="[solar]\nenabled = false\n")
+    expect("Sunlight-off prints no note", r.stderr.strip() == "", r.stderr)
 
 print(f"{'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)
