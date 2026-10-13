@@ -47,6 +47,11 @@ os.environ["OMARCHY_PATH"] = str(TEST_MISSING_OMARCHY)
 repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tool = os.path.join(repo, "bin", "gooarchy-flavorings-apply")
 failures = 0
+TEST_TOOLS = Path(_test_environment.name) / "tools"
+TEST_TOOLS.mkdir()
+VISUDO_STUB = TEST_TOOLS / "visudo"
+VISUDO_STUB.write_text("#!/bin/sh\n# Product tests do not validate the install safety rule.\nexit 0\n")
+VISUDO_STUB.chmod(0o755)
 
 
 GIO_STUB = "#!" + sys.executable + "\n" + r'''import os
@@ -227,6 +232,13 @@ def text_size_value(home):
 
 def mode(path):
     return stat.S_IMODE(os.stat(path).st_mode)
+
+
+def staged_install(destination):
+    env = os.environ.copy()
+    env["PATH"] = f"{TEST_TOOLS}:{env.get('PATH', '/usr/bin:/bin')}"
+    return subprocess.run(["make", "install", f"DESTDIR={destination}"], cwd=repo,
+                          env=env, capture_output=True, text=True)
 
 
 def load_module(name, path):
@@ -709,8 +721,7 @@ with tempfile.TemporaryDirectory() as temp:
 
 # make install copies catalogue entries verbatim and derives files without a second checkout.
 with tempfile.TemporaryDirectory() as destdir:
-    result = subprocess.run(["make", "install", f"DESTDIR={destdir}"], cwd=repo,
-                            capture_output=True, text=True)
+    result = staged_install(destdir)
     expect("make install succeeds into an isolated DESTDIR", result.returncode == 0,
            result.stderr.strip()[-300:])
     if result.returncode == 0:
@@ -1009,10 +1020,7 @@ def tree_snapshot(root):
 
 
 with tempfile.TemporaryDirectory() as stage:
-    candidate_install = subprocess.run(
-        ["make", "install", f"DESTDIR={stage}"],
-        cwd=repo, capture_output=True, text=True,
-    )
+    candidate_install = staged_install(stage)
     candidate_installed = candidate_install.returncode == 0
     expect("candidate package install succeeds in DESTDIR", candidate_installed,
            (candidate_install.stderr or candidate_install.stdout).strip()[-240:])
