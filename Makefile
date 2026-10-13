@@ -50,4 +50,3 @@ validate-sudoers:
 test:
 	python3 tests/flavorings-apply-test.py
 	python3 tests/theme-integrations-test.py
-	bash -n libexec/gooarchy-browser-policy

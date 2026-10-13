@@ -67,8 +67,11 @@ the package recipe. The installed paths are fixed because the scripts refer to t
 
 It needs Python and a POSIX shell: the desktop commands it calls, and Omarchy, are stand-ins. The
 tests use temporary homes and policy directories; they do not invoke the privileged writer or modify
-a live browser profile. `make test` also checks the writer's shell syntax and the sudoers rule with
-`visudo`.
+a live browser profile. They cover catalogue selection and refresh, app theme integration and
+preservation, and Omarchy's inert behavior. Staged-install tests use a `visudo` stand-in so sudoers
+parsing does not gate product behavior checks. A real `make install` still requires `visudo` and
+validates the narrowly scoped sudoers rule before installing it; that is an installation safety
+control.
 
 ## Choices so far
 - File browser: [Strata](https://github.com/lgse/strata) (Mike, 2026-10-04), installed and set as the file manager.

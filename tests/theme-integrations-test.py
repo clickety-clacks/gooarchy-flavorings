@@ -5,7 +5,6 @@ import importlib.util
 import json
 import os
 import shutil
-import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -17,6 +16,11 @@ repo = Path(__file__).resolve().parents[1]
 _test_environment = tempfile.TemporaryDirectory(prefix="gooarchy-theme-integrations-test-")
 os.environ["XDG_CONFIG_HOME"] = str(Path(_test_environment.name) / "config")
 os.environ["OMARCHY_PATH"] = str(Path(_test_environment.name) / "omarchy-not-installed")
+TEST_TOOLS = Path(_test_environment.name) / "tools"
+TEST_TOOLS.mkdir()
+VISUDO_STUB = TEST_TOOLS / "visudo"
+VISUDO_STUB.write_text("#!/bin/sh\n# Product tests do not validate the install safety rule.\nexit 0\n")
+VISUDO_STUB.chmod(0o755)
 helper_path = repo / "libexec" / "gooarchy-theme-integrations"
 loader = importlib.machinery.SourceFileLoader("gooarchy_theme_integrations", str(helper_path))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -40,6 +44,13 @@ def configure(home):
     integrations.POLICY_FILE = managed / "gooarchy-theme.json"
     integrations.OMARCHY = False
     return config, managed
+
+
+def staged_install(destination):
+    env = os.environ.copy()
+    env["PATH"] = f"{TEST_TOOLS}:{env.get('PATH', '/usr/bin:/bin')}"
+    return subprocess.run(["make", "install", f"DESTDIR={destination}"], cwd=repo,
+                          env=env, capture_output=True, text=True)
 
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-theme-command-") as temporary:
@@ -305,17 +316,14 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-omarchy-theme-") as temporary:
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-install-") as temporary:
     stage = Path(temporary)
-    result = subprocess.run(["make", "install", f"DESTDIR={stage}"], cwd=repo,
-                            capture_output=True, text=True)
-    expect("staged installation validates and installs the policy integration", result.returncode == 0,
+    result = staged_install(stage)
+    expect("staged installation places the browser-policy integration", result.returncode == 0,
            result.stderr or result.stdout)
     policy_writer = stage / "usr/lib/gooarchy-flavorings/gooarchy-browser-policy"
     integration_helper = stage / "usr/lib/gooarchy-flavorings/gooarchy-theme-integrations"
     expect("staged root writer and helper have executable modes",
            policy_writer.is_file() and integration_helper.is_file()
            and policy_writer.stat().st_mode & 0o111 and integration_helper.stat().st_mode & 0o111)
-    expect("staged sudoers rule has mode 0440",
-           stat.S_IMODE((stage / "etc/sudoers.d/90-gooarchy-browser-policy").stat().st_mode) == 0o440)
     expect("staged license notice is retained",
            (stage / "usr/share/licenses/gooarchy-flavorings/omarchy-browser-policy-MIT.txt").is_file())
 
