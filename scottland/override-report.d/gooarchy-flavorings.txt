@@ -5,3 +5,11 @@ Reason: Gooarchy enables touchpad tapping and dragging for its Scottland session
   Was: No Gooarchy tap-to-click or tap-and-drag setting
   Now: Tap-to-click and tap-and-drag are enabled in the Scottland session
   Origin: Gooarchy flavoring
+
+## Gooarchy Scottland shortcuts
+Reason: Scottland's sheet lists the shortcuts that actually work in the session, including imported Omarchy bindings; Omarchy's menu lists Hyprland bindings that may be translated, skipped or displaced.
+
+- Keys: Super+K
+  Was: Open Omarchy's keybinding menu
+  Now: Open Scottland's keybinding cheat sheet
+  Origin: Gooarchy flavoring
