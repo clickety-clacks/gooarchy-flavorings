@@ -21,6 +21,7 @@ install: validate-sudoers
 	install -Dm755 scottland/autostart.d/40-gooarchy-wallpaper "$(SCOTTLAND)/autostart.d/40-gooarchy-wallpaper"
 	install -Dm755 scottland/autostart.d/45-gooarchy-flavorings "$(SCOTTLAND)/autostart.d/45-gooarchy-flavorings"
 	install -Dm755 scottland/accent.d/20-gooarchy-theme "$(SCOTTLAND)/accent.d/20-gooarchy-theme"
+	install -Dm644 scottland/override-report.d/gooarchy-flavorings.txt "$(SCOTTLAND)/override-report.d/gooarchy-flavorings.txt"
 	install -Dm755 libexec/gooarchy-wallpaper "$(DESTDIR)/usr/lib/gooarchy-flavorings/gooarchy-wallpaper"
 	install -Dm755 libexec/gooarchy-theme-integrations "$(DESTDIR)/usr/lib/gooarchy-flavorings/gooarchy-theme-integrations"
 	install -Dm755 libexec/gooarchy-browser-policy "$(DESTDIR)/usr/lib/gooarchy-flavorings/gooarchy-browser-policy"
