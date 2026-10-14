@@ -3,7 +3,7 @@
 #   gooarchy-theme            print the current mode, and whether Sunlight switches it
 #   gooarchy-theme light|dark|toggle
 # Sets the desktop's color-scheme preference; Scottland's halos, the wallpaper, Ghostty and GTK
-# apps (through the settings portal) follow it.
+# apps (through the settings portal) follow it. Strata and Chromium pick up Watercolor Dream too.
 #
 # Scottland's Sunlight schedule is on unless turned off (Scottland Settings > Sunlight, or
 # enabled = false under [solar] in ~/.config/scottland/solar.ini). While it is on and knows the
@@ -20,10 +20,23 @@ warn() {
   sunlight && echo "Note: Scottland's Sunlight schedule is on and switches light/dark with the sun once it knows the location; turn it off in Scottland Settings > Sunlight to keep this mode." >&2
   return 0
 }
+integrations() {
+  local_helper="$(dirname -- "$0")/../libexec/gooarchy-theme-integrations"
+  if [ -x "$local_helper" ]; then
+    "$local_helper" "$1"
+  else
+    /usr/lib/gooarchy-flavorings/gooarchy-theme-integrations "$1"
+  fi
+}
+set_mode() {
+  gsettings set $key "prefer-$1" && integrations "$1" && warn
+}
 case ${1:-} in
   "") echo "$(current) (Sunlight schedule: $(sunlight && echo on || echo off))" ;;
-  light) gsettings set $key prefer-light && warn ;;
-  dark) gsettings set $key prefer-dark && warn ;;
-  toggle) { [ "$(current)" = dark ] && gsettings set $key prefer-light || gsettings set $key prefer-dark; } && warn ;;
+  light) set_mode light ;;
+  dark) set_mode dark ;;
+  toggle)
+    if [ "$(current)" = dark ]; then set_mode light; else set_mode dark; fi
+    ;;
   *) echo "usage: gooarchy-theme [light|dark|toggle]" >&2; exit 2 ;;
 esac

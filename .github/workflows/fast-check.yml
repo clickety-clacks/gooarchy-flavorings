@@ -13,8 +13,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Test flavorings setup
-        run: python3 tests/flavorings-apply-test.py
+      - name: Test Flavorings product behavior
+        run: make test
       - name: Test widget packages
         run: python3 tests/widget-packages-test.py
       - name: Stage package install

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check the Weather and System Stats WG7 package matches and staged install paths."""
+import os
 import pathlib
 import re
 import subprocess
@@ -53,9 +54,17 @@ class WidgetPackageTests(unittest.TestCase):
 
     def test_staged_install_contains_only_the_two_widget_packages(self):
         with tempfile.TemporaryDirectory(prefix="gooarchy-widget-install-") as temporary:
+            tools = pathlib.Path(temporary) / "tools"
+            tools.mkdir()
+            visudo = tools / "visudo"
+            visudo.write_text("#!/bin/sh\n# This test checks package paths, not sudoers syntax.\nexit 0\n")
+            visudo.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PATH"] = f"{tools}:{environment.get('PATH', '/usr/bin:/bin')}"
             subprocess.run(
                 ["make", "install", f"DESTDIR={temporary}"],
                 cwd=ROOT,
+                env=environment,
                 check=True,
             )
 

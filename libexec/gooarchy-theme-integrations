@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Keep Strata's Gooarchy theme entry and Chromium's managed color in sync."""
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+
+
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+LOOKUP = Path(__file__).with_name("gooarchy-theme-lookup")
+OMARCHY = Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy").is_dir()
+STRATA_DEFAULT_THEME = "tokyo-night"
+STRATA_THEME_ID = "gooarchy-watercolor"
+STRATA_THEME_MARKER = "# Managed by Gooarchy flavorings. Do not edit."
+POLICY_DIR = Path("/etc/chromium/policies/managed")
+POLICY_FILE = POLICY_DIR / "gooarchy-theme.json"
+POLICY_WRITER = "/usr/lib/gooarchy-flavorings/gooarchy-browser-policy"
+
+
+def atomic_write(path, text, mode=0o600):
+    """Replace a user file in one step, retaining an existing file's owner and mode."""
+    path = Path(path)
+    if path.is_symlink():
+        raise OSError(f"{path} is a symlink")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = path.stat() if path.exists() else None
+    if old and old.st_uid != os.getuid():
+        raise OSError(f"{path} is not owned by this user")
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".gooarchy")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if old:
+            os.chown(temporary, old.st_uid, old.st_gid)
+            os.chmod(temporary, stat.S_IMODE(old.st_mode))
+        else:
+            os.chmod(temporary, mode)
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def palette(mode=None):
+    """Read colors only from the variant resolved by gooarchy-theme-lookup."""
+    if mode is not None and mode not in ("light", "dark"):
+        raise ValueError("expected light or dark")
+    command = [str(LOOKUP)]
+    if mode is not None:
+        command.append(mode)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"theme lookup failed: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "lookup returned no variant"
+        raise RuntimeError(f"theme lookup failed: {detail}")
+    variant = Path(result.stdout.strip())
+    if not variant.is_absolute():
+        raise RuntimeError("theme lookup returned a non-absolute variant path")
+    return tomllib.loads((variant / "colors.toml").read_text())
+
+
+def strata_theme(values):
+    fields = {
+        "name": "Gooarchy",
+        "background": values["background"],
+        "surface": values["lighter_background"],
+        "text": values["foreground"],
+        "accent": values["accent"],
+        "danger": values["red"],
+        "muted": values["muted"],
+        "highlight": values["selection"],
+        "border": values.get("dark_background", values["background"]),
+        "dim_text": values["muted"],
+        "syntax_keyword": values["magenta"],
+        "syntax_string": values["green"],
+        "syntax_constant": values.get("orange", values["yellow"]),
+        "syntax_type": values["yellow"],
+        "syntax_preprocessor": values["cyan"],
+    }
+    lines = [STRATA_THEME_MARKER]
+    lines.extend(f"{key} = {json.dumps(value)}" for key, value in fields.items())
+    return "\n".join(lines) + "\n"
+
+
+def replace_top_level_theme(text, theme_id):
+    """Edit only the top-level theme key, preserving every other settings line."""
+    lines = text.splitlines(keepends=True)
+    in_table = False
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("["):
+            in_table = True
+        if in_table:
+            continue
+        match = re.match(r"^([ \t]*theme[ \t]*=[ \t]*)(.*?)(\r?\n)?$", line)
+        if not match:
+            continue
+        right = match.group(2)
+        comment_at = right.find("#")
+        if comment_at >= 0:
+            before_comment = right[:comment_at]
+            suffix = before_comment[len(before_comment.rstrip()):] + right[comment_at:]
+        else:
+            suffix = right[len(right.rstrip()):]
+        newline = match.group(3) or ""
+        lines[index] = match.group(1) + json.dumps(theme_id) + suffix + newline
+        return "".join(lines)
+
+    newline = "\r\n" if "\r\n" in text else "\n"
+    insert_at = next((i for i, line in enumerate(lines) if line.lstrip().startswith("[")), len(lines))
+    if insert_at and not lines[insert_at - 1].endswith(("\n", "\r")):
+        lines[insert_at - 1] += newline
+    lines.insert(insert_at, f"theme = {json.dumps(theme_id)}{newline}")
+    return "".join(lines)
+
+
+def update_strata(resolved):
+    """Use Gooarchy colors only for Strata's default or already selected Gooarchy theme."""
+    strata_dir = CONFIG / "strata"
+    settings = strata_dir / "settings.toml"
+    themes_dir = strata_dir / "themes"
+    theme_file = themes_dir / f"{STRATA_THEME_ID}.toml"
+    if strata_dir.is_symlink() or themes_dir.is_symlink() or settings.is_symlink():
+        return False
+
+    if settings.exists():
+        original = settings.read_text()
+        try:
+            saved = tomllib.loads(original)
+        except tomllib.TOMLDecodeError:
+            return False
+        selected_mode = saved.get("mode", "theme")
+        selected_theme = saved.get("theme", STRATA_DEFAULT_THEME)
+        if selected_mode != "theme" or selected_theme not in (STRATA_DEFAULT_THEME, STRATA_THEME_ID):
+            return False
+    else:
+        original = None
+
+    if theme_file.is_symlink():
+        return False
+    if theme_file.exists():
+        try:
+            if theme_file.read_text().splitlines()[0] != STRATA_THEME_MARKER:
+                return False
+        except (OSError, IndexError):
+            return False
+
+    values = palette(resolved) if isinstance(resolved, str) else resolved
+    rendered = strata_theme(values)
+    if not theme_file.exists() or theme_file.read_text() != rendered:
+        atomic_write(theme_file, rendered, mode=0o644)
+
+    if original is None:
+        updated = 'mode = "theme"\ntheme = "gooarchy-watercolor"\n'
+    elif selected_theme != STRATA_THEME_ID:
+        updated = replace_top_level_theme(original, STRATA_THEME_ID)
+    else:
+        updated = original
+    if updated != original:
+        atomic_write(settings, updated, mode=0o600)
+    return True
+
+
+def expected_policy(color):
+    return json.dumps({"BrowserThemeColor": color, "BrowserColorScheme": "device"}, separators=(", ", ": ")) + "\n"
+
+
+def policy_is_current(content):
+    try:
+        metadata = POLICY_FILE.lstat()
+        return (stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0 and metadata.st_gid == 0
+                and stat.S_IMODE(metadata.st_mode) == 0o644 and POLICY_FILE.read_text() == content)
+    except OSError:
+        return False
+
+
+def chromium_running():
+    pgrep = shutil.which("pgrep")
+    if not pgrep:
+        return False
+    return subprocess.run([pgrep, "-u", str(os.getuid()), "-x", "chromium"],
+                          capture_output=True).returncode == 0
+
+
+def update_chromium(color):
+    """Write one managed Chromium color and refresh an already running Chromium process."""
+    chromium = shutil.which("chromium")
+    if not chromium:
+        return True
+    content = expected_policy(color)
+    policy_changed = not policy_is_current(content)
+    if policy_changed:
+        result = subprocess.run(["sudo", "-n", POLICY_WRITER, color.removeprefix("#").lower()],
+                                capture_output=True, text=True)
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            print(f"Gooarchy: couldn't update Chromium's managed theme color: {detail}", file=sys.stderr)
+            return False
+    if policy_changed and chromium_running():
+        result = subprocess.run([chromium, "--refresh-platform-policy", "--no-startup-window"],
+                                capture_output=True, text=True)
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            print(f"Gooarchy: Chromium policy refresh failed: {detail}", file=sys.stderr)
+            return False
+    return True
+
+
+def apply(mode=None):
+    if mode is not None and mode not in ("light", "dark"):
+        raise ValueError("expected light or dark")
+    # Keep exactly the same Omarchy marker used by Gooarchy flavorings' shared guard.
+    if OMARCHY:
+        return 0
+    try:
+        values = palette(mode)
+    except (OSError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
+        print(f"Gooarchy: couldn't read the selected theme: {error}", file=sys.stderr)
+        return 1
+    strata_ok = True
+    try:
+        update_strata(values)
+    except (OSError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
+        print(f"Gooarchy: couldn't update Strata's Gooarchy theme: {error}", file=sys.stderr)
+        strata_ok = False
+    color = values.get("accent", "").lower()
+    if not re.fullmatch(r"#[0-9a-f]{6}", color):
+        print("Gooarchy: the selected theme accent is not a six-digit hex color", file=sys.stderr)
+        return 1
+    chromium_ok = update_chromium(color)
+    return 0 if strata_ok and chromium_ok else 1
+
+
+def main():
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] not in ("light", "dark")):
+        print("usage: gooarchy-theme-integrations [light|dark]", file=sys.stderr)
+        return 2
+    return apply(sys.argv[1] if len(sys.argv) == 2 else None)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

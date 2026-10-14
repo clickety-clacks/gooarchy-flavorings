@@ -1,0 +1,7 @@
+## Gooarchy touchpad defaults
+Reason: Gooarchy enables touchpad tapping and dragging for its Scottland session.
+
+- Keys: touchpad tap-to-click and tap-and-drag
+  Was: No Gooarchy tap-to-click or tap-and-drag setting
+  Now: Tap-to-click and tap-and-drag are enabled in the Scottland session
+  Origin: Gooarchy flavoring
