@@ -12,8 +12,8 @@ helper to redraw the selected background before returning. The package install p
 scoped notice at its expected path and preserves installed theme entries verbatim to their source.
 
 On Omarchy (a stand-in OMARCHY_PATH): the wallpaper hook starts nothing; the color scheme, Chromium
-and Ghostty are neither written nor marked; the config hook leaves out Super+Shift+F and B and adds
-nothing else; the override report fragment lists only what changed (the bells Gooarchy set, tmux
+and Ghostty are neither written nor marked; the config hook leaves out Super+Ctrl+E and Super+Shift+F/B
+and adds nothing else; the override report fragment lists only what changed (the bells Gooarchy set, tmux
 and mosh titles the user doesn't set, default apps that win over the previous one, Strata only when
 installed), is rewritten only when it changes and is removed when nothing is left. The Gooarchy
 cases run with no Omarchy, whatever the test machine has. Text-size guards cover setup, theme
@@ -1576,13 +1576,14 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
     write(hook, read(os.path.join(repo, "scottland", "config.d", "40-gooarchy-flavorings"))
           .replace("/usr/share/gooarchy-flavorings/scottland.ini", ini), executable=True)
     gooarchy = subprocess.run([hook, "/base.ini"], env=environment(home), capture_output=True, text=True)
-    expect("Gooarchy: the config hook appends the flavorings unchanged",
+    expect("Gooarchy: the config hook keeps default-insert Super+Ctrl+E for scottland-emoji",
            gooarchy.stdout == read(ini) and not os.path.exists(os.path.join(home, "apply.log")))
     out = subprocess.run([hook, "/base.ini"], env=environment(home, omarchy), capture_output=True, text=True).stdout
     kept = [line for line in read(ini).splitlines()
-            if not any(k in line for k in ("file_manager", "_browser", "Strata is", "Chromium is", "apps start"))]
-    expect("Omarchy: the config hook leaves out Super+Shift+F and B and nothing else",
-           out.splitlines() == kept and "KEY_F" not in out and "KEY_B" not in out and "tap_to_click" in out, out)
+            if not any(k in line for k in ("picker inserts the selected emoji", "emoji_picker", "file_manager", "_browser", "Strata is", "Chromium is", "apps start"))]
+    expect("Omarchy: the config hook leaves out Super+Ctrl+E and Super+Shift+F/B and nothing else",
+           out.splitlines() == kept and "KEY_E" not in out and "KEY_F" not in out
+           and "KEY_B" not in out and "tap_to_click" in out, out)
     expect("Omarchy: the config hook brings the report up to date", "apply --override-report" in (read(os.path.join(home, "apply.log")) or ""))
 
     started = os.path.join(home, "wallpaper-started")
