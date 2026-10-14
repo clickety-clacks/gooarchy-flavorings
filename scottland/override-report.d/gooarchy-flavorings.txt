@@ -5,11 +5,3 @@ Reason: Gooarchy enables touchpad tapping and dragging for its Scottland session
   Was: No Gooarchy tap-to-click or tap-and-drag setting
   Now: Tap-to-click and tap-and-drag are enabled in the Scottland session
   Origin: Gooarchy flavoring
-
-## Gooarchy screenshot shortcuts
-Reason: Gooarchy uses the user's chosen Pictures folder, including localized or moved folders.
-
-- Keys: Print and Shift+Print
-  Was: Scottland saves both screenshots under ~/Pictures as wayfire-<timestamp>.png
-  Now: Print saves under the XDG Pictures folder as screenshot-<timestamp>.png; Shift+Print saves a selected region there
-  Origin: Gooarchy flavoring
