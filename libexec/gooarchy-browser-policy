@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Derived from Omarchy's Chromium policy writer design.
+# Copyright (c) David Heinemeier Hansson. See the retained MIT notice in LICENSES/.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
+
+if (( EUID != 0 )); then
+  echo "gooarchy-browser-policy: must run as root" >&2
+  exit 1
+fi
+if (( $# != 1 )) || [[ ! $1 =~ ^[0-9a-f]{6}$ ]]; then
+  echo "usage: gooarchy-browser-policy <six-lowercase-hex-digits>" >&2
+  exit 1
+fi
+if [[ -d "${OMARCHY_PATH:-/usr/share/omarchy}" ]]; then
+  exit 0
+fi
+command -v chromium >/dev/null 2>&1 || exit 0
+
+color=$1
+policy_dir=/etc/chromium/policies/managed
+for directory in /etc/chromium /etc/chromium/policies "$policy_dir"; do
+  if [[ -L $directory ]]; then
+    echo "gooarchy-browser-policy: refusing symlinked policy directory $directory" >&2
+    exit 1
+  fi
+done
+for directory in /etc/chromium /etc/chromium/policies "$policy_dir"; do
+  [[ -d $directory ]] || continue
+  if [[ $(stat -c '%u:%g' "$directory") != "0:0" ]]; then
+    echo "gooarchy-browser-policy: refusing non-root-owned policy directory $directory" >&2
+    exit 1
+  fi
+  mode=$(stat -c '%a' "$directory")
+  if (( (8#$mode & 022) != 0 )); then
+    echo "gooarchy-browser-policy: refusing group- or world-writable policy directory $directory" >&2
+    exit 1
+  fi
+done
+umask 022
+for directory in /etc/chromium /etc/chromium/policies "$policy_dir"; do
+  [[ -d $directory ]] || install -d -o root -g root -m 0755 "$directory"
+done
+
+destination=$policy_dir/gooarchy-theme.json
+if [[ -L $destination || -d $destination ]]; then
+  echo "gooarchy-browser-policy: refusing non-regular destination $destination" >&2
+  exit 1
+fi
+
+staged=""
+cleanup() {
+  if [[ -n $staged ]]; then
+    rm -f -- "$staged"
+  fi
+}
+trap cleanup EXIT
+staged=$(mktemp "$policy_dir/.gooarchy-theme.XXXXXX") || exit 1
+printf '{"BrowserThemeColor": "#%s", "BrowserColorScheme": "device"}\n' "$color" >"$staged"
+chmod 0644 "$staged"
+chown root:root "$staged"
+mv -fT -- "$staged" "$destination"
+staged=""

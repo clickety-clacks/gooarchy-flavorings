@@ -1,0 +1,1 @@
+ALL ALL=(root) NOPASSWD: /usr/lib/gooarchy-flavorings/gooarchy-browser-policy [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]

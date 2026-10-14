@@ -1,3 +1,5 @@
 #!/bin/sh
-# The theme's wallpaper for the desktop's light or dark mode, following changes.
+# The theme's wallpaper for the desktop's light or dark mode, following changes. On Omarchy the
+# wallpaper is Omarchy's, so nothing starts.
+[ -d "${OMARCHY_PATH:-/usr/share/omarchy}" ] && exit 0
 exec /usr/lib/gooarchy-flavorings/gooarchy-wallpaper

@@ -1,8 +1,17 @@
 #!/bin/sh
-# Append Gooarchy's flavorings (touchpad, file manager and browser keys) to the session's config.
+# Append Gooarchy's flavorings (touchpad, emoji, file manager and browser keys) to the session's config.
+# On Omarchy, Super+Ctrl+E stays Omarchy's own emoji picker, and Super+Shift+F/B stay Omarchy's
+# file manager and browser; those keys are left out. The user's override report is brought up to
+# date first, so the adapter's report (built after this) lists what the flavorings change.
 ini=/usr/share/gooarchy-flavorings/scottland.ini
 if [ "${1:-}" = --watch-paths ]; then
   echo "$ini"
   exit 0
 fi
-cat "$ini"
+if [ -d "${OMARCHY_PATH:-/usr/share/omarchy}" ]; then
+  gooarchy-flavorings-apply --override-report >&2 </dev/null
+  sed -e '/^# The picker inserts the selected emoji into the focused application by default\./,/^command_emoji_picker = /d' \
+      -e '/^# Strata is the file manager\./,/^command_browser = /d' "$ini"
+else
+  cat "$ini"
+fi
