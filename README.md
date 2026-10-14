@@ -18,6 +18,8 @@ came the same way from Scottland's `omarchy/themes/`.
 | Path | What | Installed as |
 |---|---|---|
 | `scottland/flavorings.ini` | Touchpad, file manager and browser keys for Scottland | `/usr/share/gooarchy-flavorings/scottland.ini` |
+| `scottland/widgets/weather/` | Weather rail widget package | `/usr/share/scottland/widgets/gooarchy-weather/` |
+| `scottland/widgets/system-stats/` | System Stats rail widget package | `/usr/share/scottland/widgets/gooarchy-system-stats/` |
 | `scottland/config.d/`, `autostart.d/`, `accent.d/` | Scottland hooks: append the config above, start the wallpaper and the per-user defaults, give halos the theme's accent | `/usr/lib/scottland/<hook dir>/` |
 | `bin/gooarchy-theme` | Switch between the light and dark theme | `/usr/bin/gooarchy-theme` |
 | `bin/gooarchy-flavorings-apply` | Fill in per-user defaults, once each, only where nothing is set | `/usr/bin/gooarchy-flavorings-apply` |
@@ -29,6 +31,7 @@ came the same way from Scottland's `omarchy/themes/`.
 | `themes/ghostty-theme.py` | Builds a Ghostty theme from a theme's `colors.toml` (at install) | not installed |
 | `tmux/tmux.conf`, `profile.d/`, `xdg/` | tmux titles, mosh titles, default apps | `/etc/tmux.conf`, `/etc/profile.d/`, `/etc/xdg/` |
 | `tests/flavorings-apply-test.py` | Tests `gooarchy-flavorings-apply` in throwaway home directories | not installed |
+| `tests/widget-packages-test.py` | Checks both WG7 manifests and the staged widget install tree | not installed |
 | `tests/theme-integrations-test.py` | Tests Strata preservation, Chromium policy refresh, Omarchy inertness and staged install | not installed |
 | `LICENSES/omarchy-browser-policy-MIT.txt` | Retained notice for the Omarchy-derived Chromium policy integration | `/usr/share/licenses/gooarchy-flavorings/omarchy-browser-policy-MIT.txt` |
 
@@ -64,6 +67,7 @@ the package recipe. The installed paths are fixed because the scripts refer to t
 ## Testing
 
     make test
+    python3 tests/widget-packages-test.py
 
 It needs Python and a POSIX shell: the desktop commands it calls, and Omarchy, are stand-ins. The
 tests use temporary homes and policy directories; they do not invoke the privileged writer or modify
@@ -72,6 +76,10 @@ preservation, and Omarchy's inert behavior. Staged-install tests use a `visudo` 
 parsing does not gate product behavior checks. A real `make install` still requires `visudo` and
 validates the narrowly scoped sudoers rule before installing it; that is an installation safety
 control.
+
+The widget package test checks the two canonical app IDs from Scottland core and stages
+`make install` into a temporary directory. It verifies only the two widget packages appear under
+Scottland's widget root; it does not install into the running system.
 
 ## Choices so far
 - File browser: [Strata](https://github.com/lgse/strata) (Mike, 2026-10-04), installed and set as the file manager.

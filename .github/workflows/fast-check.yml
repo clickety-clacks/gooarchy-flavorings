@@ -15,3 +15,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test Flavorings product behavior
         run: make test
+      - name: Test widget packages
+        run: python3 tests/widget-packages-test.py
