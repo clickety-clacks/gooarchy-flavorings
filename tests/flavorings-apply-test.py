@@ -725,6 +725,17 @@ with tempfile.TemporaryDirectory() as destdir:
     expect("make install succeeds into an isolated DESTDIR", result.returncode == 0,
            result.stderr.strip()[-300:])
     if result.returncode == 0:
+        o20_source = Path(repo) / "scottland/override-report.d/gooarchy-flavorings.txt"
+        o20_installed = Path(destdir) / "usr/lib/scottland/override-report.d/gooarchy-flavorings.txt"
+        o20_text = o20_installed.read_text() if o20_installed.is_file() else ""
+        o20_lines = [line.strip() for line in o20_text.splitlines() if line.strip()]
+        o20_prefixes = ("## ", "Reason:", "- Keys:", "Was:", "Now:", "Origin:")
+        expect("O20 drop-in installs at Scottland's system report path with one grouped change",
+               o20_installed.is_file() and o20_installed.read_bytes() == o20_source.read_bytes()
+               and all(line.startswith(o20_prefixes) for line in o20_lines)
+               and all(o20_text.count(marker) == 1 for marker in ("## ", "Reason:", "- Keys:", "Was:", "Now:", "Origin:"))
+               and "touchpad tap-to-click and tap-and-drag" in o20_text,
+               o20_text)
         installed = Path(destdir) / "usr/share/gooarchy-flavorings/themes"
         for source in sorted((Path(repo) / "themes").glob("*-light")) + sorted((Path(repo) / "themes").glob("*-dark")):
             target = installed / source.name
