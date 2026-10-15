@@ -7,8 +7,10 @@ widget concept, so without this package Scottland on Omarchy is incomplete).
 Scottland defines the core behavior and public interfaces this package follows. In short:
 
 - **Mechanisms live in Scottland, flavorings live here.** Widgets here implement Scottland's public
-  widget contract (`WG1`–`WG23`). If a widget needs a capability that interface does not provide,
-  propose the mechanism in Scottland core and keep app-specific code here.
+  widget contract (`WG1`–`WG23`), as defined in
+  [Scottland's widget docs](https://github.com/clickety-clacks/scottland/blob/main/docs/widgets.md).
+  If a widget needs a capability that interface does not provide, propose the mechanism in
+  Scottland core and keep app-specific code here.
 - **Additions first.** Where Omarchy has no equivalent (widgets), these are additions. Override an
   Omarchy choice only where that gives a better core Gooarchy experience than Omarchy's binding.
 - **No silent overrides.** Every override of something the user already had is listed in the
