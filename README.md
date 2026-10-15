@@ -6,8 +6,8 @@ the distro chooses. Installed by the Gooarchy distro and by Scottland's Omarchy 
 Scottland defines what a widget is; this package chooses which ones ship. Where Omarchy has no
 equivalent concept (widgets, for example), these are additions, not overrides. Flavorings override an
 Omarchy choice only where that gives a better core Gooarchy experience than Omarchy's binding, and
-every override is reported to the user with its reason when it's installed (Scottland's Omarchy
-adapter, O20/O21). App tuning is additive and removable (Scottland C7).
+every override is listed in the user's report with what changed and why. App tuning uses
+package-owned files and remains removable.
 
 This repository is the source of record for Gooarchy's flavorings; they used to live in the gooarchy
 repository's `flavorings/` directory, and their history came with them. The Watercolor Dream themes
@@ -43,8 +43,8 @@ Installed by Scottland's Omarchy adapter, the flavorings keep Omarchy's own look
   sets the color scheme nor touches Chromium or Ghostty (those steps aren't marked as applied either).
 - Super+Shift+F and Super+Shift+B stay Omarchy's file manager and browser: the config hook leaves
   those two bindings out. The touchpad and screenshot settings are appended as on Gooarchy.
-- Everything else that takes effect over what the user had is listed in Scottland's override report
-  (O20), with what it was and what it is now: the Claude Code and Codex bells Gooarchy set (while
+- Everything else that takes effect over what the user had is listed in Scottland's override report,
+  with what it was and what it is now: the Claude Code and Codex bells Gooarchy set (while
   they're still set that way), the tmux and mosh titles where the user's own config doesn't set
   them, and each default app from `/etc/xdg/scottland-mimeapps.list` that wins over the one the
   user had. The list is a per-user fragment,

@@ -1,30 +1,27 @@
-# Rulings
+# Product behavior
 
 ## Watercolor Dream theme notice
 
 Date: 2026-10-07
-Decision: `dr_2c31e1d4`
-Mike's exact ruling: "cc0"
 
 The notice applies only to the `themes/watercolor-dream-light/` and
 `themes/watercolor-dream-dark/` theme directories and their installed copies. It does not license
 Gooarchy flavorings code. The installed notice is
 `/usr/share/licenses/gooarchy-flavorings/CC0-1.0-Watercolor-Dream-themes-only.txt`.
 
-## Sunlight is transition-only, not a timer
+## Sunlight changes themes only at day/night transitions
 
 Date: 2026-10-07
-Decision: `dr_0e88648d`
-Mike's exact ruling: "Sunlight is a standalone package, installed on this machine and included and
-installed by default in Gooarchy. Sunlight must change the theme only when day becomes night or
-night becomes day; it must not repeatedly enforce the current day/night theme on a timer. Manual
-theme changes remain respected until the next day/night transition. This ruling specifies
-transition-only behavior, not an indefinite manual override until automatic is selected again."
+
+Sunlight is a standalone package, installed by default with Gooarchy. It changes the theme only when
+day becomes night or night becomes day; it does not repeatedly enforce the current theme on a timer.
+A manual theme change remains in effect until the next day/night transition. It is not an indefinite
+manual override that requires selecting automatic again.
 
 The `gooarchy-theme` and `gooarchy-flavorings-apply` notices describe this: with Sunlight on, a
 manually picked mode holds until the next sunrise or sunset, then Sunlight switches it. Sunlight
-itself (standalone, outside this repository) implements the transition-only switch; this repository
-only reads whether Sunlight is on from `enabled` in `~/.config/scottland/solar.ini`.
+implements the transition-only switch; this package only reads whether Sunlight is on from
+`enabled` in `~/.config/scottland/solar.ini`.
 
 ## Strata and Chromium follow Watercolor Dream
 
@@ -45,26 +42,16 @@ On Omarchy, the existing Omarchy marker makes both integrations inert so Omarchy
 Strata and browser appearance. The policy-writer design derives from Omarchy's MIT-licensed browser
 policy integration; its copyright and permission notice ship under `LICENSES/`.
 
-## Ghostty theme location
+## Ghostty theme source
 
-Mike's exact ruling (`dr_f74a125b`):
+On the Omarchy adapter, Ghostty reads its theme from Omarchy. On Gooarchy, Ghostty reads the
+corresponding theme from Scottland.
 
-> on the adapter version, ghostty reads from omarchy. on gooarchy, that needs to read from the scottland equivalent
-
-Accordingly, Ghostty reads from Omarchy on the adapter version and from the Scottland equivalent
-on Gooarchy.
-
-## Text size, feature 12
+## Text size
 
 Date: 2026-10-07
 
-Decision: `dr_97bef851-e1af-4f66-a438-940161b811e2`
-
-Spec: `gooarchy-text-size` (SHA-256 `500a753b13cfaad62d7cda5e6c713d17d13ea3f617d57ff9530ba4de8bdf8223`)
-
-Work item: `wi_b7a5e451`
-
-Mike ruled “all” on the held features, including feature 12: one text size across the shell, GTK
-apps and terminals. For flavorings, the value is the user's existing
-`org.gnome.desktop.interface text-scaling-factor`; flavorings sets no default and writes no size
-value or per-app copy. Core owns the command that changes the key and pushes it into running apps.
+The shell, GTK apps and terminals use one text size. Flavorings uses the user's existing
+`org.gnome.desktop.interface text-scaling-factor`; it sets no default and writes no text-size value
+or per-app copy. Scottland core owns the control that changes this setting and applies it to running
+apps.
