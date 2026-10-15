@@ -21,7 +21,7 @@ and mosh titles the user doesn't set, default apps that win over the previous on
 installed), is rewritten only when it changes and is removed when nothing is left. The Gooarchy
 cases run with no Omarchy, whatever the test machine has. Text-size guards cover setup, theme
 refresh, light/dark switching, source themes, derived Ghostty files and existing app settings under
-the R12 Omarchy directory guard.
+the Omarchy directory guard.
 """
 import fcntl
 import importlib.machinery
@@ -664,7 +664,7 @@ with tempfile.TemporaryDirectory() as temp:
            and not text_size_writes(str(refresh_home))
            and refresh_ghostty.read_bytes() == refresh_ghostty_original
            and refresh_gtk.read_bytes() == refresh_gtk_original,
-           "R12/T7 refresh preserves text size and existing Ghostty/GTK configs")
+           "Omarchy refresh preserves text size and existing Ghostty/GTK configs")
     expect("refresh does not create current-theme parents on Omarchy",
            missing_result == 0 and not missing_current.parent.exists() and calls == [])
 
@@ -721,7 +721,7 @@ with tempfile.TemporaryDirectory() as temp:
            }]
            and text_size_value(refresh_home) == "1.25"
            and not text_size_writes(str(refresh_home)),
-           "theme refresh updates derived links while preserving text size (T2)")
+           "theme refresh updates derived links while preserving text size")
 
 # make install copies catalogue entries verbatim and derives files without a second checkout.
 with tempfile.TemporaryDirectory() as destdir:
@@ -729,18 +729,18 @@ with tempfile.TemporaryDirectory() as destdir:
     expect("make install succeeds into an isolated DESTDIR", result.returncode == 0,
            result.stderr.strip()[-300:])
     if result.returncode == 0:
-        o20_source = Path(repo) / "scottland/override-report.d/gooarchy-flavorings.txt"
-        o20_installed = Path(destdir) / "usr/lib/scottland/override-report.d/gooarchy-flavorings.txt"
-        o20_text = o20_installed.read_text() if o20_installed.is_file() else ""
-        o20_lines = [line.strip() for line in o20_text.splitlines() if line.strip()]
-        o20_prefixes = ("## ", "Reason:", "- Keys:", "Was:", "Now:", "Origin:")
-        expect("O20 drop-in installs both grouped changes at Scottland's system report path",
-               o20_installed.is_file() and o20_installed.read_bytes() == o20_source.read_bytes()
-               and all(line.startswith(o20_prefixes) for line in o20_lines)
-               and all(o20_text.count(marker) == 2 for marker in ("## ", "Reason:", "- Keys:", "Was:", "Now:", "Origin:"))
-               and o20_text.count("- Keys: touchpad tap-to-click and tap-and-drag") == 1
-               and o20_text.count("- Keys: Super+K") == 1,
-               o20_text)
+        override_report_source = Path(repo) / "scottland/override-report.d/gooarchy-flavorings.txt"
+        override_report_installed = Path(destdir) / "usr/lib/scottland/override-report.d/gooarchy-flavorings.txt"
+        override_report_text = override_report_installed.read_text() if override_report_installed.is_file() else ""
+        override_report_lines = [line.strip() for line in override_report_text.splitlines() if line.strip()]
+        override_report_prefixes = ("## ", "Reason:", "- Keys:", "Was:", "Now:", "Origin:")
+        expect("override-report drop-in installs both grouped changes at Scottland's system report path",
+               override_report_installed.is_file() and override_report_installed.read_bytes() == override_report_source.read_bytes()
+               and all(line.startswith(override_report_prefixes) for line in override_report_lines)
+               and all(override_report_text.count(marker) == 2 for marker in ("## ", "Reason:", "- Keys:", "Was:", "Now:", "Origin:"))
+               and override_report_text.count("- Keys: touchpad tap-to-click and tap-and-drag") == 1
+               and override_report_text.count("- Keys: Super+K") == 1,
+               override_report_text)
         installed = Path(destdir) / "usr/share/gooarchy-flavorings/themes"
         for source in sorted((Path(repo) / "themes").glob("*-light")) + sorted((Path(repo) / "themes").glob("*-dark")):
             target = installed / source.name
@@ -761,7 +761,7 @@ with tempfile.TemporaryDirectory() as destdir:
                                    if any(key in line.lower()
                                           for key in ("font-size", "text-size", "text-scaling-factor"))]
                                  if ghostty.is_file() else ["derived Ghostty file is missing"])
-            expect(f"{source.name} derived Ghostty has no text-size setting (T5)",
+            expect(f"{source.name} derived Ghostty has no text-size setting",
                    not derived_size_lines, derived_size_lines)
 
 
@@ -867,7 +867,7 @@ with tempfile.TemporaryDirectory() as temp:
            and not (current.parent / ".current-theme-refresh.lock").exists()
            and not (home / ".local/state/gooarchy/flavorings/ghostty").exists(),
            (result.stderr or result.stdout).strip()[-180:])
-    expect("R12/T7 setup preserves text size and existing app configs",
+    expect("Omarchy setup preserves text size and existing app configs",
            os.path.isdir(omarchy) and result.returncode == 0 and text_size_value(home) == "1.25"
            and not text_size_writes(str(home))
            and ghostty_config.read_bytes() == original_ghostty and gtk_config.read_bytes() == gtk_original)
@@ -912,29 +912,29 @@ with tempfile.TemporaryDirectory() as home:
            and "keeping that choice through periodic checks" in r.stdout
            and "changing it only at the next scheduled sunrise or sunset" in r.stdout
            and "only if you want to keep one mode permanently" in r.stdout, r.stdout)
-    expect("setup leaves an unset text size unset (T2/T3)", not (Path(home) / ".test-text-scaling-factor").exists())
-    expect("setup does not write the text-scaling key (T2)", not text_size_writes(home))
+    expect("setup leaves an unset text size unset", not (Path(home) / ".test-text-scaling-factor").exists())
+    expect("setup does not write the text-scaling key", not text_size_writes(home))
     default = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "text-scaling-factor"],
                              env=environment(home), capture_output=True, text=True)
-    expect("an unset text size keeps the GNOME schema default of 1.0 (T3)",
+    expect("an unset text size keeps the GNOME schema default of 1.0",
            default.returncode == 0 and default.stdout.strip() == "1.0", default.stdout.strip())
 
 with tempfile.TemporaryDirectory() as home:
     scale = Path(home) / ".test-text-scaling-factor"
     scale.write_text("1.25")
     result = apply(home)
-    expect("setup preserves an existing text size (T3)", result.returncode == 0 and text_size_value(home) == "1.25")
-    expect("setup does not write an existing text size (T2)", result.returncode == 0 and not text_size_writes(home))
+    expect("setup preserves an existing text size", result.returncode == 0 and text_size_value(home) == "1.25")
+    expect("setup does not write an existing text size", result.returncode == 0 and not text_size_writes(home))
 
 with tempfile.TemporaryDirectory() as home:
     scale = Path(home) / ".test-text-scaling-factor"
     scale.write_text("1.25")
     dark = theme(home, "dark")
     light = theme(home, "light")
-    expect("light/dark theme switches do not write text size (T2/T5)",
+    expect("light/dark theme switches do not write text size",
            dark.returncode == 0 and light.returncode == 0 and not text_size_writes(home),
            (dark.stderr or light.stderr).strip()[-180:])
-    expect("light/dark theme switches preserve the existing text size (T5)", text_size_value(home) == "1.25")
+    expect("light/dark theme switches preserve the existing text size", text_size_value(home) == "1.25")
 
 with tempfile.TemporaryDirectory() as home:
     scale = Path(home) / ".test-text-scaling-factor"
@@ -949,15 +949,15 @@ with tempfile.TemporaryDirectory() as home:
     gtk.write_bytes(gtk_original)
     result = apply(home)
     switched = theme(home, "dark")
-    expect("setup and theme change preserve existing text size (T2)",
+    expect("setup and theme change preserve existing text size",
            result.returncode == 0 and switched.returncode == 0 and text_size_value(home) == "1.25")
-    expect("setup and theme change write no text-size value (T2)",
+    expect("setup and theme change write no text-size value",
            result.returncode == 0 and switched.returncode == 0 and not text_size_writes(home))
-    expect("setup and theme change preserve existing Ghostty and GTK configs byte for byte (T6)",
+    expect("setup and theme change preserve existing Ghostty and GTK configs byte for byte",
            config.read_bytes() == ghostty_original and gtk.read_bytes() == gtk_original)
 
 size_lines = theme_size_settings()
-expect("theme sources contain no font-size or text-size setting (T5)", not size_lines, size_lines)
+expect("theme sources contain no font-size or text-size setting", not size_lines, size_lines)
 
 with tempfile.TemporaryDirectory() as home:
     real = os.path.join(home, "dotfiles-claude.json")
@@ -1248,7 +1248,7 @@ with tempfile.TemporaryDirectory() as stage:
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
                     env=sync_env, capture_output=True, text=True, timeout=8,
                 )
-                # Snapshot immediately when refresh returns; no later poll may satisfy R8.
+                # Snapshot immediately when refresh returns; a later poll cannot prove redraw happened before return.
                 swaybg_calls = single_wallpaper_log.read_text().splitlines()
                 redraw_at_return = any("new-dark/backgrounds/new.webp" in line
                                         for line in swaybg_calls[1:])
@@ -1486,9 +1486,9 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
     config = os.path.join(home, ".config")
     write(os.path.join(config, "mimeapps.list"), STOCK_USER_MIMEAPPS)
     r = apply(home, omarchy=omarchy)
-    expect("R12/T7: an existing text size stays unchanged when OMARCHY_PATH is a directory",
+    expect("Omarchy setup: an existing text size stays unchanged when OMARCHY_PATH is a directory",
            os.path.isdir(omarchy) and r.returncode == 0 and text_size_value(home) == "1.25")
-    expect("R12/T7: flavorings writes no text-size value under the directory predicate",
+    expect("Omarchy setup: flavorings writes no text-size value when OMARCHY_PATH is a directory",
            os.path.isdir(omarchy) and r.returncode == 0 and not text_size_writes(home))
     markers = os.path.join(home, ".local", "state", "gooarchy", "flavorings")
     expect("Omarchy: the color scheme is not set", "color-scheme" not in (read(os.path.join(home, "gsettings.log")) or ""))

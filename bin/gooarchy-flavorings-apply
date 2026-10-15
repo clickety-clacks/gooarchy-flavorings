@@ -6,7 +6,7 @@
   gooarchy-flavorings-apply --list     show which defaults have been applied for this user
   gooarchy-flavorings-apply --override-report
                                        on Omarchy, list the flavorings that change what this user
-                                       had in Scottland's override report (O20)
+                                       had in Scottland's override report
 
 Each default is applied at most once per user (a marker in ~/.local/state/gooarchy/flavorings
 remembers it), so changing it back later sticks. A default only fills a setting that isn't set:
@@ -295,7 +295,7 @@ def still_set_by_gooarchy(name, current, ours):
     return current == ours and marker.is_file() and marker.read_text() == SET_BY_GOOARCHY
 
 
-# Scottland's Omarchy override report (O20) -----------------------------------------------------
+# Scottland's Omarchy override report -----------------------------------------------------
 
 STRATA = "io.github.lgse.Strata.desktop"
 SCOTTLAND_DESKTOPS = ("scottland", "wayfire", "wlroots")  # Scottland's XDG_CURRENT_DESKTOP
