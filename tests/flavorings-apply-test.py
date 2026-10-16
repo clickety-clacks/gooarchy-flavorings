@@ -1187,7 +1187,7 @@ with tempfile.TemporaryDirectory() as stage:
         themes = sync_root / "themes"
         for directory in (sync_home, runtime, hooks / "libexec"):
             directory.mkdir(parents=True, exist_ok=True)
-        for slug in ("old", "new", "broken"):
+        for slug in ("old", "new", "healthy", "broken"):
             for theme_mode in ("light", "dark"):
                 backgrounds = themes / f"{slug}-{theme_mode}" / "backgrounds"
                 backgrounds.mkdir(parents=True)
@@ -1266,6 +1266,101 @@ with tempfile.TemporaryDirectory() as stage:
             "SYNTHETIC_LATE_FAILURE": str(late_failure_signal),
             "SYNTHETIC_STOP_MARKER": str(failed_candidate_stopped),
         }
+
+        healthy_home = sync_root / "healthy-home"
+        healthy_runtime = sync_root / "healthy-runtime"
+        healthy_home.mkdir()
+        healthy_runtime.mkdir()
+        healthy_config = healthy_home / ".config"
+        healthy_selection = healthy_config / "gooarchy" / "theme"
+        healthy_selection.parent.mkdir(parents=True)
+        healthy_selection.write_text("old\n")
+        (healthy_home / "theme-mode").write_text("dark\n")
+        (healthy_home / "gsettings-events").write_text("")
+        healthy_current = healthy_selection.parent / "current-theme"
+        healthy_current.mkdir()
+        for theme_mode in ("light", "dark"):
+            os.symlink(themes / f"old-{theme_mode}", healthy_current / theme_mode)
+        healthy_env = {
+            **sync_env,
+            "HOME": str(healthy_home),
+            "XDG_CONFIG_HOME": str(healthy_config),
+            "XDG_RUNTIME_DIR": str(healthy_runtime),
+        }
+        healthy_wallpaper_log = healthy_home / "swaybg.log"
+        healthy_integration_log = healthy_home / "integration.log"
+        healthy_helper = subprocess.Popen(
+            [str(wallpaper)], env=healthy_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        healthy_ready = False
+        healthy_transition = False
+        healthy_detail = ""
+        healthy_helper_error = ""
+        try:
+            deadline = time.monotonic() + 5
+            while healthy_helper.poll() is None and time.monotonic() < deadline:
+                if (healthy_integration_log.is_file()
+                        and healthy_integration_log.read_text().splitlines() == ["old"]):
+                    healthy_ready = True
+                    break
+                time.sleep(0.01)
+            if healthy_ready and healthy_helper.poll() is None:
+                healthy_selection.write_text("healthy\n")
+                healthy_result = subprocess.run(
+                    [str(wallpaper.with_name("gooarchy-theme-refresh"))],
+                    env=healthy_env, capture_output=True, text=True, timeout=8,
+                )
+                healthy_calls = healthy_wallpaper_log.read_text().splitlines()
+                healthy_pids = [int(line.split("|", 1)[0]) for line in healthy_calls]
+                healthy_request_path = healthy_runtime / "gooarchy-wallpaper.request"
+                healthy_ack_path = healthy_runtime / "gooarchy-wallpaper.ack"
+                healthy_request_token = (healthy_request_path.read_text().strip()
+                                         if healthy_request_path.is_file() else "")
+                healthy_ack = read_wallpaper_ack(healthy_ack_path)
+                healthy_palette_calls = (healthy_home / "palette.log").read_text().splitlines()
+                healthy_integrations = healthy_integration_log.read_text().splitlines()
+                healthy_transition = (
+                    healthy_result.returncode != 0
+                    and "unconfirmed" in healthy_result.stderr.lower()
+                    and len(healthy_calls) >= 2
+                    and "healthy-dark/backgrounds/healthy.webp" in healthy_calls[-1]
+                    and pid_is_running(healthy_pids[0])
+                    and pid_is_running(healthy_pids[-1])
+                    and healthy_request_token
+                    and healthy_ack.get("token") == healthy_request_token
+                    and healthy_ack.get("requested") == str(
+                        themes / "healthy-dark" / "backgrounds" / "healthy.webp")
+                    and healthy_ack.get("applied") is None
+                    and os.readlink(healthy_current / "dark") == str(themes / "healthy-dark")
+                    and healthy_palette_calls == [f"once|dark|{themes / 'healthy-dark'}"]
+                    and healthy_integrations == ["old", "healthy"]
+                    and healthy_helper.poll() is None
+                    and (healthy_runtime / "gooarchy-wallpaper.lock").is_file())
+                healthy_detail = (healthy_result.stderr or healthy_result.stdout).strip()[-240:]
+                if not healthy_transition:
+                    healthy_detail = (f"{healthy_detail} rc={healthy_result.returncode}; "
+                                      f"pids={healthy_pids}; calls={healthy_calls}; "
+                                      f"request={healthy_request_token!r}; ack={healthy_ack!r}; "
+                                      f"palette={healthy_palette_calls}; "
+                                      f"integrations={healthy_integrations}; "
+                                      f"dark={os.readlink(healthy_current / 'dark')}")
+            else:
+                healthy_detail = "wallpaper helper did not finish startup integrations"
+        except Exception as error:
+            healthy_detail = f"{type(error).__name__}: {error}"
+        finally:
+            if healthy_helper.poll() is None:
+                healthy_helper.terminate()
+            try:
+                _, healthy_helper_error = healthy_helper.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                healthy_helper.kill()
+                _, healthy_helper_error = healthy_helper.communicate(timeout=5)
+        if healthy_helper_error.strip():
+            healthy_detail = f"{healthy_detail}; helper stderr: {healthy_helper_error.strip()[-240:]}".strip("; ")
+        expect("a healthy wallpaper transition stays active while application remains unconfirmed",
+               healthy_transition, healthy_detail)
+
         single_wallpaper_log = sync_home / "swaybg.log"
         startup_integration_log = sync_home / "integration.log"
         wallpaper_helper = subprocess.Popen(
