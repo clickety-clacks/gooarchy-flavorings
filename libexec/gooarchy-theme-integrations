@@ -4,12 +4,14 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import tomllib
 from pathlib import Path
+from xml.etree import ElementTree
 
 
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -21,6 +23,10 @@ STRATA_THEME_MARKER = "# Managed by Gooarchy flavorings. Do not edit."
 POLICY_DIR = Path("/etc/chromium/policies/managed")
 POLICY_FILE = POLICY_DIR / "gooarchy-theme.json"
 POLICY_WRITER = "/usr/lib/gooarchy-flavorings/gooarchy-browser-policy"
+FONTCONFIG_FRAGMENT = Path("fontconfig/conf.d/99-gooarchy-monospace.conf")
+GHOSTTY_FRAGMENT = Path("gooarchy/font.ghostty")
+GHOSTTY_INCLUDE_MARKER = "# Gooarchy managed monospace font include."
+GHOSTTY_SERVICE = "app-com.mitchellh.ghostty.service"
 
 
 def atomic_write(path, text, mode=0o600):
@@ -224,6 +230,456 @@ def update_chromium(color):
     return True
 
 
+def fontconfig_fragment_path():
+    return CONFIG / FONTCONFIG_FRAGMENT
+
+
+def ghostty_fragment_path():
+    return CONFIG / GHOSTTY_FRAGMENT
+
+
+def ghostty_config_path():
+    directory = CONFIG / "ghostty"
+    # Current Ghostty checks config.ghostty before the legacy config path; when both exist,
+    # the latter is loaded afterwards and therefore owns the final value.
+    legacy = directory / "config"
+    modern = directory / "config.ghostty"
+    if legacy.exists():
+        return legacy
+    if modern.exists():
+        return modern
+    return legacy
+
+
+def fontconfig_monospace_families(run=None):
+    run = run or subprocess.run
+    fc_list = shutil.which("fc-list")
+    if not fc_list:
+        raise RuntimeError("Fontconfig fc-list is unavailable")
+    result = run([fc_list, "--format=%{family[0]}\t%{spacing}\n"],
+                 capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"Fontconfig could not list installed fonts: {detail}")
+    families = set()
+    for line in result.stdout.splitlines():
+        if "\t" not in line:
+            continue
+        family, spacing = line.rsplit("\t", 1)
+        if family.strip() and "100" in {part.strip() for part in spacing.split(",")}:
+            families.add(family.strip())
+    return sorted(families, key=os.fsencode)
+
+
+def ghostty_font_families(executable=None, run=None):
+    run = run or subprocess.run
+    executable = executable or shutil.which("ghostty")
+    if not executable:
+        return None
+    result = run([executable, "+list-fonts"], capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"Ghostty could not list its supported fonts: {detail}")
+    families = set()
+    for line in result.stdout.splitlines():
+        if not line or line[0].isspace():
+            continue
+        family = line.strip()
+        if family and family.lower() not in {"fonts", "available fonts"}:
+            families.add(family)
+    return families
+
+
+def font_inventory(run=None):
+    run = run or subprocess.run
+    fontconfig = set(fontconfig_monospace_families(run=run))
+    ghostty = ghostty_font_families(run=run)
+    if ghostty is None:
+        raise RuntimeError("Ghostty is unavailable; compatible installed families cannot be confirmed")
+    ghostty_by_casefold = {family.casefold(): family for family in ghostty}
+    return sorted((family for family in fontconfig if family.casefold() in ghostty_by_casefold),
+                  key=os.fsencode)
+
+
+def read_saved_font():
+    path = fontconfig_fragment_path()
+    if path.is_symlink():
+        raise RuntimeError(f"refusing symlinked Gooarchy font preference: {path}")
+    try:
+        root = ElementTree.parse(path).getroot()
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, ElementTree.ParseError) as error:
+        raise RuntimeError(f"cannot read Gooarchy font preference: {error}") from error
+    for match in root.findall("match"):
+        edit = match.find("edit")
+        if edit is not None and edit.get("name") == "family":
+            family = edit.findtext("string")
+            if family:
+                return family
+    raise RuntimeError("Gooarchy font preference has no selected monospace family")
+
+
+def fontconfig_effective_family(run=None):
+    run = run or subprocess.run
+    fc_match = shutil.which("fc-match")
+    if not fc_match:
+        raise RuntimeError("Fontconfig fc-match is unavailable")
+    result = run([fc_match, "--format=%{family[0]}\n", "monospace"],
+                 capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"Fontconfig could not resolve monospace: {detail}")
+    family = result.stdout.strip()
+    return family or None
+
+
+def _ghostty_family_values(output):
+    values = []
+    for line in output.splitlines():
+        match = re.match(r"^font-family[ \t]*=[ \t]*(.*?)[ \t]*$", line)
+        if not match:
+            continue
+        value = match.group(1)
+        if value.startswith('"') and value.endswith('"'):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+        if not value:
+            values = []
+        else:
+            values.append(value)
+    return values
+
+
+def ghostty_configured_family(run=None, defaults=False):
+    run = run or subprocess.run
+    executable = shutil.which("ghostty")
+    if not executable:
+        return None, "Ghostty is unavailable"
+    command = [executable, "+show-config"]
+    if defaults:
+        command.append("--default")
+    try:
+        result = run(command, capture_output=True, text=True, timeout=10)
+    except (OSError, UnicodeError, subprocess.SubprocessError) as error:
+        return None, f"Ghostty configuration could not be read: {error}"
+    if result.returncode:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        return None, f"Ghostty configuration could not be read: {detail}"
+    values = _ghostty_family_values(result.stdout)
+    return (values[0] if values else None), None
+
+
+def _fontconfig_fragment(family):
+    import html
+    return (
+        '<?xml version="1.0"?>\n'
+        '<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
+        '<fontconfig>\n'
+        '  <match target="pattern">\n'
+        '    <test name="family" compare="eq"><string>monospace</string></test>\n'
+        '    <edit name="family" mode="prepend" binding="strong">\n'
+        f'      <string>{html.escape(family)}</string>\n'
+        '    </edit>\n'
+        '  </match>\n'
+        '</fontconfig>\n'
+    )
+
+
+def _ghostty_fragment(family):
+    return f'font-family = ""\nfont-family = {json.dumps(family, ensure_ascii=False)}\n'
+
+
+def _ghostty_include(content, fragment):
+    absolute = fragment.absolute()
+    directive = f"config-file = {json.dumps('?' + str(absolute), ensure_ascii=False)}"
+    lines = content.splitlines(keepends=True)
+    markers = [index for index, line in enumerate(lines)
+               if line.rstrip("\r\n") == GHOSTTY_INCLUDE_MARKER]
+    if len(markers) > 1:
+        raise RuntimeError("Ghostty config contains duplicate Gooarchy font include markers")
+    if markers:
+        index = markers[0]
+        if index + 1 >= len(lines) or lines[index + 1].rstrip("\r\n") != directive:
+            raise RuntimeError("Gooarchy Ghostty font include marker was changed")
+        return content
+    if any(line.rstrip("\r\n") == directive for line in lines):
+        return content
+    separator = "" if not content or content.endswith(("\n", "\r")) else "\n"
+    return f"{content}{separator}{GHOSTTY_INCLUDE_MARKER}\n{directive}\n"
+
+
+def _snapshot(path):
+    path = Path(path)
+    if path.is_symlink():
+        raise RuntimeError(f"refusing symlinked configuration file: {path}")
+    try:
+        metadata = path.stat()
+        return (path.read_text(encoding="utf-8"), stat.S_IMODE(metadata.st_mode))
+    except FileNotFoundError:
+        return None
+    except UnicodeError as error:
+        raise RuntimeError(f"configuration file is not valid UTF-8: {path}") from error
+
+
+def _restore(path, snapshot):
+    path = Path(path)
+    if snapshot is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    content, mode = snapshot
+    atomic_write(path, content, mode=mode)
+
+
+def _session_ghostty_pids(proc_root=Path("/proc")):
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    display = os.environ.get("WAYLAND_DISPLAY")
+    if not runtime or not display:
+        return []
+    expected = {"XDG_RUNTIME_DIR": runtime, "WAYLAND_DISPLAY": display}
+    pids = []
+    try:
+        entries = list(Path(proc_root).iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != os.getuid():
+                continue
+            comm = (entry / "comm").read_text(encoding="utf-8").strip()
+            if comm != "ghostty":
+                argv0 = (entry / "cmdline").read_bytes().split(b"\0", 1)[0]
+                if not argv0 or Path(os.fsdecode(argv0)).name != "ghostty":
+                    continue
+            environment = {}
+            for item in (entry / "environ").read_bytes().split(b"\0"):
+                if b"=" in item:
+                    name, value = item.split(b"=", 1)
+                    environment[os.fsdecode(name)] = os.fsdecode(value)
+            if all(environment.get(name) == value for name, value in expected.items()):
+                pids.append(int(entry.name))
+        except (OSError, ValueError):
+            continue
+    return sorted(pids)
+
+
+def reload_ghostty(run=None):
+    run = run or subprocess.run
+    systemctl = shutil.which("systemctl")
+    if systemctl:
+        try:
+            active = run([systemctl, "--user", "is-active", "--quiet", GHOSTTY_SERVICE],
+                         capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            active = None
+        if active is not None and active.returncode == 0:
+            try:
+                result = run([systemctl, "--user", "reload", GHOSTTY_SERVICE],
+                             capture_output=True, text=True, timeout=10)
+            except (OSError, subprocess.SubprocessError) as error:
+                return False, f"Ghostty user-service reload failed: {error}"
+            if result.returncode:
+                detail = result.stderr.strip() or f"exit {result.returncode}"
+                return False, f"Ghostty user-service reload failed: {detail}"
+            return True, "Ghostty user-service reload requested"
+    pids = _session_ghostty_pids()
+    if not pids:
+        return True, "no Ghostty process was found in this graphical session; saved for new windows"
+    failures = []
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGUSR2)
+        except OSError as error:
+            failures.append(f"PID {pid}: {error}")
+    if failures:
+        return False, "Ghostty reload failed: " + "; ".join(failures)
+    return True, "Ghostty reload requested for the current graphical session"
+
+
+def font_current(output=None, error=None, run=None):
+    output = output or sys.stdout
+    error = error or sys.stderr
+    run = run or subprocess.run
+    if OMARCHY:
+        print("Omarchy owns appearance; showing installed Gooarchy font state only.", file=error)
+    try:
+        saved = read_saved_font()
+        effective = fontconfig_effective_family(run=run)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        print(f"Font state could not be read: {exception}", file=error)
+        return 1
+    print(f"Saved monospace family: {saved or 'none'}", file=output)
+    print(f"Fontconfig effective monospace: {effective or 'unknown'}", file=output)
+    ghostty_bin = shutil.which("ghostty")
+    if not ghostty_bin:
+        print("Ghostty: unavailable; not installed by this command.", file=output)
+        return 0
+    configured, config_error = ghostty_configured_family(run=run)
+    default, default_error = ghostty_configured_family(run=run, defaults=True)
+    if config_error or default_error:
+        detail = config_error or default_error
+        print(f"Ghostty configured family: unknown ({detail})", file=error)
+        return 1
+    if configured is None:
+        configured = default
+    label = "default" if configured == default else "configured"
+    print(f"Ghostty {label} family: {configured or 'unknown'}", file=output)
+    if saved:
+        try:
+            available = font_inventory(run=run)
+        except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+            print(f"Saved family compatibility is unknown: {exception}", file=error)
+        else:
+            if saved.casefold() not in {family.casefold() for family in available}:
+                print(f"Saved family is unavailable: {saved}", file=error)
+                print(f"Fontconfig fallback: {effective or 'unknown'}", file=error)
+            elif effective and saved.casefold() != effective.casefold():
+                print(f"Fontconfig is using {effective}; the saved choice is {saved}.", file=error)
+    return 0
+
+
+def set_font(family, output=None, error=None, run=None):
+    output = output or sys.stdout
+    error = error or sys.stderr
+    run = run or subprocess.run
+    if OMARCHY:
+        print("Omarchy owns appearance; font selection was not changed.", file=error)
+        return 1
+    try:
+        families = font_inventory(run=run)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        print(f"Font selection was not changed: {exception}", file=error)
+        return 1
+    selected = next((installed for installed in families
+                     if installed.casefold() == family.casefold()), None)
+    if selected is None:
+        print(f"Font is not an installed compatible monospace family: {family}", file=error)
+        return 2
+    family = selected
+
+    fontconfig_path = fontconfig_fragment_path()
+    ghostty_fragment = ghostty_fragment_path()
+    config_path = ghostty_config_path()
+    paths = (fontconfig_path, ghostty_fragment, config_path)
+    try:
+        snapshots = {path: _snapshot(path) for path in paths}
+    except (OSError, RuntimeError) as exception:
+        print(f"Font selection was not changed: {exception}", file=error)
+        return 1
+    try:
+        old_fontconfig = fontconfig_effective_family(run=run)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        print(f"Font selection was not changed: Fontconfig could not be read: {exception}",
+              file=error)
+        return 1
+    old_ghostty, ghostty_error = ghostty_configured_family(run=run)
+    if ghostty_error:
+        print(f"Font selection was not changed: {ghostty_error}", file=error)
+        return 1
+    try:
+        atomic_write(fontconfig_path, _fontconfig_fragment(family), mode=0o600)
+        atomic_write(ghostty_fragment, _ghostty_fragment(family), mode=0o600)
+        original_config = "" if snapshots[config_path] is None else snapshots[config_path][0]
+        updated_config = _ghostty_include(original_config, ghostty_fragment)
+        if updated_config != original_config:
+            atomic_write(config_path, updated_config, mode=0o600)
+    except (OSError, RuntimeError) as exception:
+        restore_errors = []
+        for path in reversed(paths):
+            try:
+                _restore(path, snapshots[path])
+            except (OSError, RuntimeError) as restore_error:
+                restore_errors.append(f"{path}: {restore_error}")
+        detail = f"Font selection was not applied: {exception}"
+        if restore_errors:
+            detail += "; configuration rollback failed: " + "; ".join(restore_errors)
+        print(detail, file=error)
+        return 1
+
+    try:
+        effective = fontconfig_effective_family(run=run)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        print(f"Saved font family: {family}; Fontconfig match could not be verified: {exception}",
+              file=error)
+        return 1
+    print(f"Saved monospace family: {family}", file=output)
+    if effective and effective.casefold() == family.casefold():
+        print(f"Fontconfig effective monospace: {effective}", file=output)
+        if old_fontconfig and old_fontconfig.casefold() != effective.casefold():
+            print(f"Fontconfig monospace override: {old_fontconfig} -> {effective} (Gooarchy font choice).",
+                  file=output)
+        print("New Fontconfig lookups use this family; cached applications may need a new launch.",
+              file=output)
+    else:
+        print(f"Fontconfig effective monospace: {effective or 'unknown'}", file=error)
+        print("A higher-priority Fontconfig rule prevents the selected family from applying.",
+              file=error)
+        return 1
+
+    if old_ghostty and old_ghostty.casefold() != family.casefold():
+        print(f"Ghostty font override: {old_ghostty} -> {family} (the selected Gooarchy font).",
+              file=output)
+    ghostty_bin = shutil.which("ghostty")
+    if not ghostty_bin:
+        print("Ghostty: unavailable; the saved fragment will apply if Ghostty is installed later.",
+              file=error)
+        return 1
+    configured, config_error = ghostty_configured_family(run=run)
+    if config_error:
+        print(f"Saved font family: {family}; Ghostty configuration is not confirmed: {config_error}",
+              file=error)
+        return 1
+    if configured is None:
+        print(f"Saved font family: {family}; Ghostty's configured family is not confirmed.",
+              file=error)
+        return 1
+    if configured.casefold() != family.casefold():
+        print(f"Saved font family: {family}; Ghostty still resolves {configured}.", file=error)
+        print("A higher-priority Ghostty configuration prevents the selected family from applying.",
+              file=error)
+        return 1
+    reloaded, detail = reload_ghostty(run=run)
+    if not reloaded:
+        print(f"Saved font family: {family}; Ghostty reload failed: {detail}", file=error)
+        return 1
+    print(f"{detail}; existing-window appearance is not inferred from the reload request.", file=output)
+    return 0
+
+
+def font_command(args, output=None, error=None, run=None):
+    output = output or sys.stdout
+    error = error or sys.stderr
+    run = run or subprocess.run
+    if args == ["current"]:
+        return font_current(output=output, error=error, run=run)
+    if args == ["list"]:
+        if OMARCHY:
+            print("Omarchy owns appearance; listing installed Gooarchy-compatible fonts only.",
+                  file=error)
+        try:
+            families = font_inventory(run=run)
+        except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+            print(f"Cannot list compatible fonts: {exception}", file=error)
+            return 1
+        for family in families:
+            print(family, file=output)
+        if not shutil.which("ghostty"):
+            print("Ghostty is unavailable; these are installed Fontconfig monospace families.",
+                  file=error)
+        return 0
+    if len(args) == 2 and args[0] == "set":
+        return set_font(args[1], output=output, error=error, run=run)
+    print("usage: gooarchy-theme-integrations font <current|list|set FAMILY>", file=error)
+    return 2
+
+
 def apply(mode=None):
     if mode is not None and mode not in ("light", "dark"):
         raise ValueError("expected light or dark")
@@ -250,10 +706,14 @@ def apply(mode=None):
 
 
 def main():
-    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] not in ("light", "dark")):
-        print("usage: gooarchy-theme-integrations [light|dark]", file=sys.stderr)
+    args = sys.argv[1:]
+    if args and args[0] == "font":
+        return font_command(args[1:])
+    if len(args) > 1 or (len(args) == 1 and args[0] not in ("light", "dark")):
+        print("usage: gooarchy-theme-integrations [light|dark] | font <current|list|set FAMILY>",
+              file=sys.stderr)
         return 2
-    return apply(sys.argv[1] if len(sys.argv) == 2 else None)
+    return apply(args[0] if args else None)
 
 
 if __name__ == "__main__":
