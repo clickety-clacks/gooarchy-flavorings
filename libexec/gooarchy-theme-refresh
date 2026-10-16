@@ -43,6 +43,32 @@ def _reapply_scottland_palette(run):
         raise RuntimeError(f"Scottland color-scheme reapply failed: {detail}")
 
 
+def _wallpaper_ack_token(content):
+    """Accept old token-only acknowledgements while new owners also report the applied image."""
+    try:
+        value = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return content.strip()
+    if isinstance(value, dict) and isinstance(value.get("token"), str):
+        return value["token"]
+    return ""
+
+
+def _wallpaper_ack_application_confirmed(content):
+    """Only an ack that names the requested image as applied confirms live success."""
+    try:
+        value = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(value, dict):
+        return False
+    applied = value.get("applied")
+    requested = value.get("requested")
+    return (isinstance(applied, str) and Path(applied).is_absolute()
+            and isinstance(requested, str) and Path(requested).is_absolute()
+            and applied == requested)
+
+
 def _refresh_running_wallpaper():
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime or not Path(runtime).is_dir() or not os.environ.get("WAYLAND_DISPLAY"):
@@ -94,9 +120,13 @@ def _refresh_running_wallpaper():
             acknowledged = False
         else:
             with os.fdopen(ack_fd, "r") as stream:
-                acknowledged = stream.read(128).strip() == token
+                content = stream.read(4096)
+                acknowledged = _wallpaper_ack_token(content) == token
+                application_confirmed = _wallpaper_ack_application_confirmed(content)
         if acknowledged:
-            return
+            if application_confirmed:
+                return
+            raise RuntimeError("running wallpaper processed the refresh but live application is unconfirmed")
         try:
             active_fd = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError:

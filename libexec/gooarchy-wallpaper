@@ -1,44 +1,246 @@
 #!/usr/bin/env python3
-"""Draw the selected theme and keep Strata and Chromium on the same variant."""
+"""Apply the selected theme wallpaper and expose its existing owner to gooarchy look."""
 import fcntl
+import json
 import os
 import select
 import signal
 import stat
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 
 LOOKUP = Path(__file__).with_name("gooarchy-theme-lookup")
+REFRESH = Path(__file__).with_name("gooarchy-theme-refresh")
 INTEGRATIONS = Path(__file__).with_name("gooarchy-theme-integrations")
 IMAGE_SUFFIXES = {".webp", ".png", ".jpg", ".jpeg"}
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
 CURRENT_THEME = CONFIG_HOME / "gooarchy" / "current-theme"
+PREFERENCES = CONFIG_HOME / "gooarchy" / "wallpapers.json"
 RUNTIME_LOCK = "gooarchy-wallpaper.lock"
 REFRESH_REQUEST = "gooarchy-wallpaper.request"
 REFRESH_ACK = "gooarchy-wallpaper.ack"
+HELP = (
+    "Usage: gooarchy-wallpaper <current|list|set NAME|next>\n"
+    "       gooarchy-wallpaper  (run the wallpaper owner)\n"
+)
 
 
-def variant_path():
-    result = subprocess.run([str(LOOKUP)], capture_output=True, text=True, check=True, timeout=5)
-    return Path(result.stdout.strip())
+class WallpaperApplicationUnconfirmed(RuntimeError):
+    """The wallpaper process stayed alive without confirming that it applied its image."""
 
 
-def first_background(variant):
-    backgrounds = variant / "backgrounds"
-    files = sorted(
+def variant_path(run=subprocess.run):
+    try:
+        result = run([str(LOOKUP)], capture_output=True, text=True, check=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"theme lookup failed: {error}") from error
+    variant = Path(result.stdout.strip())
+    if not variant.is_absolute():
+        raise RuntimeError("theme lookup returned a non-absolute variant path")
+    return variant
+
+
+def background_files(variant):
+    backgrounds = Path(variant) / "backgrounds"
+    if not backgrounds.is_dir():
+        return []
+    return sorted(
         (path for path in backgrounds.iterdir()
          if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES),
         key=lambda path: os.fsencode(path.name),
     )
+
+
+def first_background(variant):
+    files = background_files(variant)
     if not files:
-        raise RuntimeError(f"no supported background in {variant.name}")
+        raise RuntimeError(f"no supported background in {Path(variant).name}")
     return files[0]
 
 
-def draw():
-    return subprocess.Popen(["swaybg", "--mode", "fill", "--image", str(first_background(variant_path()))])
+def read_preferences(path=None):
+    path = Path(path or PREFERENCES)
+    if path.is_symlink():
+        raise RuntimeError(f"refusing symlinked wallpaper preference: {path}")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        raise RuntimeError(f"cannot read wallpaper preference: {error}") from error
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"wallpaper preference is not valid JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("wallpaper preference must be an object")
+    for variant, name in value.items():
+        if not isinstance(variant, str) or not Path(variant).is_absolute():
+            raise RuntimeError("wallpaper preference contains a non-absolute variant key")
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            raise RuntimeError("wallpaper preference contains an invalid background name")
+    return value
+
+
+def atomic_write_preferences(value, path=None):
+    path = Path(path or PREFERENCES)
+    if path.is_symlink():
+        raise RuntimeError(f"refusing symlinked wallpaper preference: {path}")
+    parent = path.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    previous = None
+    if path.exists():
+        metadata = path.stat()
+        if metadata.st_uid != os.getuid():
+            raise RuntimeError(f"wallpaper preference is not owned by this user: {path}")
+        previous = metadata
+    temporary = parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if previous is not None:
+            os.chown(temporary, previous.st_uid, previous.st_gid)
+            os.chmod(temporary, stat.S_IMODE(previous.st_mode))
+        os.replace(temporary, path)
+        directory_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def wallpaper_state(variant, preferences=None):
+    variant = Path(variant)
+    files = background_files(variant)
+    if not files:
+        raise RuntimeError(f"no supported background in {variant.name}")
+    preferences = read_preferences() if preferences is None else preferences
+    key = str(variant)
+    saved = preferences.get(key)
+    if saved is None:
+        return files, files[0], "default", None
+    selected = next((path for path in files if path.name == saved), None)
+    if selected is None:
+        return files, files[0], "saved-unavailable", saved
+    return files, selected, "explicit", saved
+
+
+def draw(image=None):
+    image = image or first_background(variant_path())
+    process = subprocess.Popen(
+        ["swaybg", "--mode", "fill", "--image", str(image)],
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    process._gooarchy_image_load_failure = threading.Event()
+    process._gooarchy_image_load_error = []
+    reader = threading.Thread(
+        target=forward_swaybg_stderr,
+        args=(process.stderr, process._gooarchy_image_load_failure,
+              process._gooarchy_image_load_error),
+        daemon=True,
+    )
+    reader.start()
+    return process
+
+
+def _swaybg_load_error(line):
+    return any(marker in line for marker in (
+        "Failed to load image:",
+        "Failed to load background image",
+        "Failed to read background image",
+    ))
+
+
+def forward_swaybg_stderr(stream, failure, detail):
+    if stream is None:
+        return
+    try:
+        for line in stream:
+            if _swaybg_load_error(line):
+                detail.append(line.strip())
+                failure.set()
+            print(line, end="", file=sys.stderr)
+    except (OSError, ValueError):
+        return
+
+
+def swaybg_load_failure(process):
+    if process is None:
+        return None
+    failure = getattr(process, "_gooarchy_image_load_failure", None)
+    if failure is None or not failure.is_set():
+        return None
+    detail = getattr(process, "_gooarchy_image_load_error", [])
+    return detail[-1] if detail else "swaybg reported an image-load failure"
+
+
+def swaybg_process_failure(process):
+    failure = swaybg_load_failure(process)
+    if failure:
+        return failure
+    if process is None:
+        return None
+    return_code = process.poll()
+    if return_code is not None:
+        return f"swaybg exited with status {return_code}"
+    return None
+
+
+def wait_for_swaybg_start(process, image, timeout=1.0):
+    """Observe early failure; liveness without a positive apply result stays unknown."""
+    failure = getattr(process, "_gooarchy_image_load_failure", None)
+    detail = getattr(process, "_gooarchy_image_load_error", [])
+    deadline = time.monotonic() + timeout
+    while True:
+        if failure is not None and failure.is_set():
+            message = detail[-1] if detail else f"swaybg could not decode {image}"
+            raise RuntimeError(message)
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(f"swaybg could not apply {image} (exit {return_code})")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # swaybg has no positive image-applied response on this interface.
+            # A live PID and no stderr error do not establish that the image is visible.
+            raise WallpaperApplicationUnconfirmed(
+                f"swaybg remained running but did not confirm applying {image}"
+            )
+        if failure is None:
+            time.sleep(min(remaining, 0.05))
+        else:
+            failure.wait(min(remaining, 0.05))
+
+
+def replace_wallpaper(current, image, start=draw, wait=wait_for_swaybg_start):
+    """Keep an unconfirmed attempt running without claiming it was applied."""
+    candidate = start(image)
+    try:
+        wait(candidate, image)
+    except WallpaperApplicationUnconfirmed:
+        return candidate, False
+    except BaseException:
+        stop_child(candidate)
+        raise
+    if current is not None:
+        stop_child(current)
+    return candidate, True
 
 
 def update_integrations():
@@ -66,12 +268,47 @@ def current_theme_signature():
     return tuple(signature)
 
 
-def open_runtime_control():
+def runtime_paths(create=False):
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime or not Path(runtime).is_dir() or not os.environ.get("WAYLAND_DISPLAY"):
-        return None, None, None
+        return None
     runtime_path = Path(runtime)
-    lock_path = runtime_path / RUNTIME_LOCK
+    return (
+        runtime_path / RUNTIME_LOCK,
+        runtime_path / REFRESH_REQUEST,
+        runtime_path / REFRESH_ACK,
+    )
+
+
+def wallpaper_owner_active():
+    paths = runtime_paths()
+    if paths is None:
+        return False
+    lock_path = paths[0]
+    try:
+        lock_fd = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return False
+    try:
+        metadata = os.fstat(lock_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise RuntimeError(f"refusing unexpected wallpaper lock: {lock_path}")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        else:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            return False
+    finally:
+        os.close(lock_fd)
+
+
+def open_runtime_control():
+    paths = runtime_paths()
+    if paths is None:
+        return None, None, None
+    lock_path, request_path, ack_path = paths
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     lock_fd = os.open(lock_path, flags, 0o600)
     try:
@@ -85,7 +322,7 @@ def open_runtime_control():
     except BaseException:
         os.close(lock_fd)
         raise
-    return lock_fd, runtime_path / REFRESH_REQUEST, runtime_path / REFRESH_ACK
+    return lock_fd, request_path, ack_path
 
 
 def read_runtime_token(path):
@@ -95,18 +332,47 @@ def read_runtime_token(path):
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
         return ""
-    with os.fdopen(fd, "r") as stream:
+    with os.fdopen(fd, "r", encoding="utf-8") as stream:
         return stream.read(128).strip()
 
 
-def write_runtime_token(path, token):
+def read_runtime_ack(path):
+    if path is None:
+        return {"token": "", "applied": None, "requested": None}
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return {"token": "", "applied": None, "requested": None}
+    with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        content = stream.read(4096)
+    try:
+        result = json.loads(content)
+    except json.JSONDecodeError:
+        # Older owner processes wrote only the token. That cannot prove an image was applied.
+        return {"token": content.strip(), "applied": None, "requested": None}
+    if not isinstance(result, dict) or not isinstance(result.get("token"), str):
+        return {"token": "", "applied": None, "requested": None}
+    applied = result.get("applied")
+    if applied is not None and (not isinstance(applied, str) or not Path(applied).is_absolute()):
+        applied = None
+    requested = result.get("requested")
+    if requested is not None and (not isinstance(requested, str) or not Path(requested).is_absolute()):
+        requested = None
+    return {"token": result["token"], "applied": applied, "requested": requested}
+
+
+def write_runtime_ack(path, token, applied, requested=None):
     if path is None:
         return
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        with os.fdopen(fd, "w") as stream:
-            stream.write(token + "\n")
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"token": token, "applied": str(applied) if applied is not None else None,
+                       "requested": str(requested) if requested is not None else None},
+                      stream, separators=(",", ":"))
+            stream.write("\n")
             stream.flush()
         os.replace(temp, path)
     except BaseException:
@@ -115,6 +381,135 @@ def write_runtime_token(path, token):
         except FileNotFoundError:
             pass
         raise
+
+
+def applied_wallpaper():
+    if not wallpaper_owner_active():
+        return None
+    paths = runtime_paths()
+    return read_runtime_ack(paths[2])["applied"]
+
+
+def status_for_current(variant, output, error):
+    files, selected, state, saved = wallpaper_state(variant)
+    if _omarchy_owns_appearance():
+        print("Omarchy owns appearance; these are Gooarchy's saved wallpaper choices.", file=error)
+    print(f"Variant: {variant}", file=output)
+    if state == "saved-unavailable":
+        print(f"Saved choice: {saved} (unavailable)", file=output)
+        print(f"Effective choice: {selected.name} (default fallback)", file=output)
+    elif state == "explicit":
+        print(f"Saved choice: {saved}", file=output)
+        print(f"Effective choice: {selected.name} (explicit)", file=output)
+    else:
+        print(f"Saved choice: none", file=output)
+        print(f"Effective choice: {selected.name} (default)", file=output)
+    applied = applied_wallpaper()
+    if applied is None:
+        print("Applied in this session: unknown or wallpaper owner unavailable", file=output)
+    elif Path(applied) == selected:
+        print(f"Applied in this session: {Path(applied).name}", file=output)
+    else:
+        print(f"Applied in this session: {Path(applied).name} (differs from effective choice)",
+              file=output)
+    return 0
+
+
+def request_live_application(expected, output, error, run=subprocess.run):
+    try:
+        result = run([str(REFRESH)], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as exception:
+        applied = applied_wallpaper()
+        if applied == str(expected):
+            print(f"Saved and applied wallpaper: {expected.name}", file=output)
+            print(f"theme refresh could not be confirmed: {exception}", file=error)
+        else:
+            print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
+            print(f"theme refresh failed: {exception}", file=error)
+        return 1
+    if result.stdout:
+        output.write(result.stdout)
+    if result.stderr:
+        error.write(result.stderr)
+    owner_active = wallpaper_owner_active()
+    applied = applied_wallpaper() if owner_active else None
+    if result.returncode != 0:
+        if applied == str(expected):
+            print(f"Wallpaper applied: {expected.name}; another theme integration failed.", file=error)
+        else:
+            print(f"Saved wallpaper: {expected.name}; live application failed or is unconfirmed.", file=error)
+        return 1
+    if applied == str(expected):
+        print(f"Saved and applied wallpaper: {expected.name}", file=output)
+    elif not owner_active:
+        print(f"Saved wallpaper: {expected.name}; it will apply when the wallpaper owner starts.", file=output)
+    elif applied is None:
+        print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
+        return 1
+    else:
+        print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
+        return 1
+    return 0
+
+
+def set_wallpaper(variant, name, output, error, run=subprocess.run):
+    if _omarchy_owns_appearance():
+        print("Omarchy owns appearance; wallpaper selection was not changed.", file=error)
+        return 1
+    variant = Path(variant)
+    files, _, _, _ = wallpaper_state(variant)
+    selected = next((path for path in files if path.name == name), None)
+    if selected is None or Path(name).name != name:
+        print(f"Wallpaper is not installed for {variant.name}: {name}", file=error)
+        return 2
+    preferences = read_preferences()
+    preferences[str(variant)] = selected.name
+    try:
+        atomic_write_preferences(preferences)
+    except (OSError, RuntimeError) as exception:
+        print(f"Wallpaper was not saved: {exception}", file=error)
+        return 1
+    print(f"Saved wallpaper choice: {selected.name}", file=output)
+    return request_live_application(selected, output, error, run=run)
+
+
+def dispatch(args, output=None, error=None, run=subprocess.run):
+    output = output or sys.stdout
+    error = error or sys.stderr
+    if not args or args == ["--help"] or args == ["-h"]:
+        output.write(HELP)
+        return 0
+    if args not in (["current"], ["list"], ["next"]) and not (
+            len(args) == 2 and args[0] == "set"):
+        print(HELP, file=error)
+        return 2
+    try:
+        variant = variant_path(run=run)
+        files, selected, _, _ = wallpaper_state(variant)
+        if args == ["current"]:
+            return status_for_current(variant, output, error)
+        if args == ["list"]:
+            if _omarchy_owns_appearance():
+                print("Omarchy owns appearance; these are Gooarchy's installed wallpaper choices.",
+                      file=error)
+            for path in files:
+                print(path.name, file=output)
+            return 0
+        if args == ["next"]:
+            if _omarchy_owns_appearance():
+                print("Omarchy owns appearance; wallpaper selection was not changed.", file=error)
+                return 1
+            index = next(i for i, path in enumerate(files) if path == selected)
+            chosen = files[(index + 1) % len(files)]
+            return set_wallpaper(variant, chosen.name, output, error, run=run)
+        return set_wallpaper(variant, args[1], output, error, run=run)
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exception:
+        print(f"Gooarchy wallpaper: {exception}", file=error)
+        return 1
+
+
+def _omarchy_owns_appearance():
+    return Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy").is_dir()
 
 
 def stop_child(process):
@@ -128,8 +523,8 @@ def stop_child(process):
         process.wait()
 
 
-def main():
-    if Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy").is_dir():
+def run_owner():
+    if _omarchy_owns_appearance():
         return 0
 
     def stop(_signum, _frame):
@@ -139,55 +534,140 @@ def main():
     lock_fd, request_path, ack_path = open_runtime_control()
     monitor = None
     swaybg = None
+    fallback_swaybg = None
+    fallback_image = None
+    fallback_applied_image = None
+    swaybg_image = None
+    desired_image = None
+    applied_image = None
     try:
-        monitor = subprocess.Popen(["gsettings", "monitor", "org.gnome.desktop.interface", "color-scheme"],
-                                   stdout=subprocess.PIPE, text=True)
-        swaybg = draw()
-        if swaybg.poll() is not None:
-            raise RuntimeError("swaybg exited during wallpaper startup")
+        monitor = subprocess.Popen(
+            ["gsettings", "monitor", "org.gnome.desktop.interface", "color-scheme"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        _, image, _, _ = wallpaper_state(variant_path())
+        swaybg_image = str(image)
+        desired_image = swaybg_image
+        try:
+            swaybg = draw(image)
+            wait_for_swaybg_start(swaybg, image)
+        except WallpaperApplicationUnconfirmed as exception:
+            # Keep the initial process as an unconfirmed display attempt.
+            print(f"Gooarchy wallpaper application is unconfirmed: {exception}", file=sys.stderr)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exception:
+            stop_child(swaybg)
+            swaybg = None
+            print(f"Gooarchy wallpaper application failed: {exception}", file=sys.stderr)
+        ack = read_runtime_ack(ack_path)
+        last_request = ack["token"]
+        last_completed_request = last_request
+        write_runtime_ack(ack_path, last_completed_request, applied_image, requested=desired_image)
         theme_signature = current_theme_signature()
-        last_request = read_runtime_token(ack_path)
         update_integrations()
         while True:
-            readers = [monitor.stdout] if monitor.stdout is not None else []
+            fallback_failure = swaybg_process_failure(fallback_swaybg)
+            if fallback_failure:
+                print(f"Gooarchy wallpaper fallback failed: {fallback_failure}", file=sys.stderr)
+                stop_child(fallback_swaybg)
+                fallback_swaybg = None
+                fallback_image = None
+                fallback_applied_image = None
+
+            late_failure = swaybg_process_failure(swaybg)
+            if late_failure:
+                print(f"Gooarchy wallpaper application failed; current image is unknown: {late_failure}",
+                      file=sys.stderr)
+                stop_child(swaybg)
+                if fallback_swaybg is not None:
+                    swaybg = fallback_swaybg
+                    swaybg_image = fallback_image
+                    applied_image = fallback_applied_image
+                    fallback_swaybg = None
+                    fallback_image = None
+                    fallback_applied_image = None
+                else:
+                    swaybg = None
+                    applied_image = None
+                write_runtime_ack(ack_path, last_completed_request, applied_image,
+                                  requested=desired_image)
+            readers = [monitor.stdout] if monitor is not None and monitor.stdout is not None else []
             ready, _, _ = select.select(readers, [], [], 1.0)
-            redraw = False
             request = read_runtime_token(request_path)
             requested = bool(request and request != last_request)
-            if requested:
-                # Process each token once; a failed refresh stays unacknowledged for its caller.
-                last_request = request
-                redraw = True
-            if monitor.stdout is not None and monitor.stdout in ready:
+            redraw = requested
+            if monitor is not None and monitor.stdout is not None and monitor.stdout in ready:
                 if not monitor.stdout.readline():
                     monitor.stdout.close()
-                    monitor.stdout = None  # keep the wallpaper, but continue servicing refresh requests
+                    monitor.stdout = None
                 else:
                     redraw = True
-            elif swaybg.poll() is not None and not redraw:
+            elif (not redraw
+                  and (swaybg is None or swaybg.poll() is not None)
+                  and (fallback_swaybg is None or fallback_swaybg.poll() is not None)
+                  and (monitor is None or monitor.poll() is not None)):
                 break
             new_signature = current_theme_signature()
             if new_signature != theme_signature:
-                theme_signature = new_signature
                 redraw = True
-            if redraw:
-                if swaybg.poll() is None:
-                    swaybg.terminate()
-                    swaybg.wait()
-                swaybg = draw()
-                if swaybg.poll() is not None:
-                    raise RuntimeError("swaybg exited during wallpaper refresh")
-                integrations_updated = update_integrations()
-                if requested and integrations_updated:
-                    write_runtime_token(ack_path, request)
+            if not redraw:
+                continue
+            if requested:
+                last_request = request
+            requested_image = None
+            try:
+                _, requested_image, _, _ = wallpaper_state(variant_path())
+                desired_image = str(requested_image)
+                replacement, confirmed = replace_wallpaper(swaybg, requested_image)
+                if confirmed:
+                    stop_child(fallback_swaybg)
+                    fallback_swaybg = None
+                    fallback_image = None
+                    fallback_applied_image = None
+                    swaybg = replacement
+                    swaybg_image = desired_image
+                    applied_image = desired_image
+                else:
+                    stop_child(fallback_swaybg)
+                    fallback_swaybg = swaybg
+                    fallback_image = swaybg_image
+                    fallback_applied_image = applied_image
+                    swaybg = replacement
+                    swaybg_image = desired_image
+                    applied_image = None
+                    print("Gooarchy wallpaper application is unconfirmed; keeping the prior process as fallback.",
+                          file=sys.stderr)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exception:
+                print(f"Gooarchy wallpaper refresh failed; keeping the previous image: {exception}",
+                      file=sys.stderr)
+                theme_signature = current_theme_signature()
+                if requested_image is None:
+                    continue
+            theme_signature = current_theme_signature()
+            integrations_updated = update_integrations()
+            if requested and integrations_updated:
+                last_completed_request = request
+            write_runtime_ack(ack_path, last_completed_request, applied_image,
+                              requested=desired_image)
         if swaybg is not None:
             swaybg.wait()
     finally:
         stop_child(monitor)
         stop_child(swaybg)
+        stop_child(fallback_swaybg)
         if lock_fd is not None:
             os.close(lock_fd)
     return 0
+
+
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    if not args:
+        try:
+            return run_owner()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exception:
+            print(f"Gooarchy wallpaper: {exception}", file=sys.stderr)
+            return 1
+    return dispatch(args)
 
 
 if __name__ == "__main__":
