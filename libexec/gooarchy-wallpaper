@@ -29,6 +29,10 @@ HELP = (
 )
 
 
+class WallpaperApplicationUnconfirmed(RuntimeError):
+    """The wallpaper process stayed alive without confirming that it applied its image."""
+
+
 def variant_path(run=subprocess.run):
     try:
         result = run([str(LOOKUP)], capture_output=True, text=True, check=True, timeout=5)
@@ -177,8 +181,18 @@ def forward_swaybg_stderr(stream, failure, detail):
         return
 
 
+def swaybg_load_failure(process):
+    if process is None:
+        return None
+    failure = getattr(process, "_gooarchy_image_load_failure", None)
+    if failure is None or not failure.is_set():
+        return None
+    detail = getattr(process, "_gooarchy_image_load_error", [])
+    return detail[-1] if detail else "swaybg reported an image-load failure"
+
+
 def wait_for_swaybg_start(process, image, timeout=1.0):
-    """Keep the old wallpaper until swaybg reports startup or image-load failure."""
+    """Observe early failure; liveness without a positive apply result stays unknown."""
     failure = getattr(process, "_gooarchy_image_load_failure", None)
     detail = getattr(process, "_gooarchy_image_load_error", [])
     deadline = time.monotonic() + timeout
@@ -191,7 +205,11 @@ def wait_for_swaybg_start(process, image, timeout=1.0):
             raise RuntimeError(f"swaybg could not apply {image} (exit {return_code})")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return
+            # swaybg has no positive image-applied response on this interface.
+            # A live PID and no stderr error do not establish that the image is visible.
+            raise WallpaperApplicationUnconfirmed(
+                f"swaybg remained running but did not confirm applying {image}"
+            )
         if failure is None:
             time.sleep(min(remaining, 0.05))
         else:
@@ -199,7 +217,7 @@ def wait_for_swaybg_start(process, image, timeout=1.0):
 
 
 def replace_wallpaper(current, image, start=draw, wait=wait_for_swaybg_start):
-    """Retain the working wallpaper unless the replacement survives startup checks."""
+    """Retain the prior wallpaper unless the replacement application is confirmed."""
     candidate = start(image)
     try:
         wait(candidate, image)
@@ -306,27 +324,30 @@ def read_runtime_token(path):
 
 def read_runtime_ack(path):
     if path is None:
-        return {"token": "", "applied": None}
+        return {"token": "", "applied": None, "requested": None}
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
-        return {"token": "", "applied": None}
+        return {"token": "", "applied": None, "requested": None}
     with os.fdopen(fd, "r", encoding="utf-8") as stream:
         content = stream.read(4096)
     try:
         result = json.loads(content)
     except json.JSONDecodeError:
         # Older owner processes wrote only the token. That cannot prove an image was applied.
-        return {"token": content.strip(), "applied": None}
+        return {"token": content.strip(), "applied": None, "requested": None}
     if not isinstance(result, dict) or not isinstance(result.get("token"), str):
-        return {"token": "", "applied": None}
+        return {"token": "", "applied": None, "requested": None}
     applied = result.get("applied")
     if applied is not None and (not isinstance(applied, str) or not Path(applied).is_absolute()):
         applied = None
-    return {"token": result["token"], "applied": applied}
+    requested = result.get("requested")
+    if requested is not None and (not isinstance(requested, str) or not Path(requested).is_absolute()):
+        requested = None
+    return {"token": result["token"], "applied": applied, "requested": requested}
 
 
-def write_runtime_ack(path, token, image):
+def write_runtime_ack(path, token, applied, requested=None):
     if path is None:
         return
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -334,7 +355,9 @@ def write_runtime_ack(path, token, image):
                  getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump({"token": token, "applied": str(image)}, stream, separators=(",", ":"))
+            json.dump({"token": token, "applied": str(applied) if applied is not None else None,
+                       "requested": str(requested) if requested is not None else None},
+                      stream, separators=(",", ":"))
             stream.write("\n")
             stream.flush()
         os.replace(temp, path)
@@ -503,14 +526,35 @@ def run_owner():
             stdout=subprocess.PIPE, text=True,
         )
         _, image, _, _ = wallpaper_state(variant_path())
-        swaybg = replace_wallpaper(None, image)
+        swaybg_image = str(image)
+        applied_image = None
+        try:
+            swaybg = draw(image)
+            wait_for_swaybg_start(swaybg, image)
+        except WallpaperApplicationUnconfirmed as exception:
+            # Keep the initial process alive as the best available display attempt, but do not
+            # claim its image is visible. Later replacements still preserve this process.
+            print(f"Gooarchy wallpaper application is unconfirmed: {exception}", file=sys.stderr)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exception:
+            stop_child(swaybg)
+            swaybg = None
+            print(f"Gooarchy wallpaper application failed: {exception}", file=sys.stderr)
         ack = read_runtime_ack(ack_path)
         last_request = ack["token"]
-        last_acknowledged_request = last_request
-        write_runtime_ack(ack_path, last_request, image)
+        last_completed_request = last_request
+        write_runtime_ack(ack_path, last_completed_request, applied_image, requested=image)
         theme_signature = current_theme_signature()
         update_integrations()
         while True:
+            late_failure = swaybg_load_failure(swaybg)
+            if late_failure:
+                print(f"Gooarchy wallpaper application failed; current image is unknown: {late_failure}",
+                      file=sys.stderr)
+                stop_child(swaybg)
+                swaybg = None
+                applied_image = None
+                write_runtime_ack(ack_path, last_completed_request, applied_image,
+                                  requested=swaybg_image)
             readers = [monitor.stdout] if monitor is not None and monitor.stdout is not None else []
             ready, _, _ = select.select(readers, [], [], 1.0)
             request = read_runtime_token(request_path)
@@ -522,7 +566,7 @@ def run_owner():
                     monitor.stdout = None
                 else:
                     redraw = True
-            elif swaybg.poll() is not None and not redraw:
+            elif swaybg is not None and swaybg.poll() is not None and not redraw:
                 break
             new_signature = current_theme_signature()
             if new_signature != theme_signature:
@@ -531,19 +575,27 @@ def run_owner():
                 continue
             if requested:
                 last_request = request
+            requested_image = None
             try:
-                _, image, _, _ = wallpaper_state(variant_path())
-                swaybg = replace_wallpaper(swaybg, image)
+                _, requested_image, _, _ = wallpaper_state(variant_path())
+                swaybg = replace_wallpaper(swaybg, requested_image)
+                swaybg_image = str(requested_image)
+                applied_image = str(requested_image)
+            except WallpaperApplicationUnconfirmed as exception:
+                print(f"Gooarchy wallpaper application is unconfirmed; keeping the previous image: {exception}",
+                      file=sys.stderr)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exception:
                 print(f"Gooarchy wallpaper refresh failed; keeping the previous image: {exception}",
                       file=sys.stderr)
                 theme_signature = current_theme_signature()
-                continue
+                if requested_image is None:
+                    continue
             theme_signature = current_theme_signature()
             integrations_updated = update_integrations()
             if requested and integrations_updated:
-                last_acknowledged_request = request
-            write_runtime_ack(ack_path, last_acknowledged_request, image)
+                last_completed_request = request
+            write_runtime_ack(ack_path, last_completed_request, applied_image,
+                              requested=requested_image)
         if swaybg is not None:
             swaybg.wait()
     finally:

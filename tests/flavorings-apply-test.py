@@ -127,6 +127,17 @@ def expect(name, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'} {name}{': ' + str(detail) if detail else ''}")
 
 
+def read_wallpaper_ack(path):
+    if not path.is_file():
+        return {"token": "", "applied": None, "requested": None}
+    content = path.read_text()
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError:
+        return {"token": content.strip(), "applied": None, "requested": None}
+    return value if isinstance(value, dict) else {"token": "", "applied": None, "requested": None}
+
+
 def stubs(bindir, dconf_value="", running=""):
     os.makedirs(bindir, exist_ok=True)
     home = os.path.dirname(bindir)
@@ -1202,7 +1213,7 @@ with tempfile.TemporaryDirectory() as stage:
         sync_bin.mkdir()
         (sync_bin / "gsettings").write_text("#!/bin/sh\nexec tail -n 0 -f \"$HOME/gsettings-events\"\n")
         (sync_bin / "swaybg").write_text(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$HOME/swaybg.log\"\nexec sleep 30\n",
+            "#!/bin/sh\nprintf '%s|%s\\n' \"$$\" \"$*\" >>\"$HOME/swaybg.log\"\nexec sleep 30\n",
         )
         for name in ("gsettings", "swaybg"):
             (sync_bin / name).chmod(0o755)
@@ -1248,20 +1259,37 @@ with tempfile.TemporaryDirectory() as stage:
                     [str(wallpaper.with_name("gooarchy-theme-refresh"))],
                     env=sync_env, capture_output=True, text=True, timeout=8,
                 )
-                # Snapshot immediately when refresh returns; a later poll cannot prove redraw happened before return.
+                # Check the candidate start before refresh returns. This does not prove display;
+                # the acknowledgement must remain explicitly unconfirmed.
                 swaybg_calls = single_wallpaper_log.read_text().splitlines()
-                redraw_at_return = any("new-dark/backgrounds/new.webp" in line
-                                        for line in swaybg_calls[1:])
+                candidate_started_before_return = any(
+                    "new-dark/backgrounds/new.webp" in line for line in swaybg_calls[1:])
                 palette_calls = (sync_home / "palette.log").read_text().splitlines()
                 integration_calls = (sync_home / "integration.log").read_text().splitlines()
                 request_path = runtime / "gooarchy-wallpaper.request"
                 ack_path = runtime / "gooarchy-wallpaper.ack"
                 request_token = request_path.read_text().strip() if request_path.is_file() else ""
-                ack_token = ack_path.read_text().strip() if ack_path.is_file() else ""
-                synced = (sync_result.returncode == 0 and len(swaybg_calls) >= 2
+                ack_record = read_wallpaper_ack(ack_path)
+                ack_token = ack_record.get("token", "")
+                pids = [int(line.split("|", 1)[0]) for line in swaybg_calls]
+                try:
+                    os.kill(pids[0], 0)
+                    previous_process_retained = True
+                except (IndexError, OSError):
+                    previous_process_retained = False
+                try:
+                    os.kill(pids[-1], 0)
+                    candidate_process_stopped = False
+                except (IndexError, OSError):
+                    candidate_process_stopped = True
+                synced = (sync_result.returncode != 0 and "unconfirmed" in sync_result.stderr.lower()
+                          and len(swaybg_calls) >= 2
                           and "old-dark/backgrounds/old.webp" in swaybg_calls[0]
-                          and redraw_at_return
+                          and candidate_started_before_return
                           and request_token and ack_token == request_token
+                          and ack_record.get("requested") == str(themes / "new-dark" / "backgrounds" / "new.webp")
+                          and ack_record.get("applied") is None and previous_process_retained
+                          and candidate_process_stopped
                           and palette_calls == [f"once|dark|{themes / 'new-dark'}"]
                           and integration_calls == ["old", "new"]
                           and os.readlink(current / "dark") == str(themes / "new-dark")
@@ -1270,11 +1298,11 @@ with tempfile.TemporaryDirectory() as stage:
                 sync_detail = (sync_result.stderr or sync_result.stdout).strip()[-240:]
                 if not synced:
                     sync_detail = (f"{sync_detail} rc={sync_result.returncode}; "
-                                   f"redraw_at_return={redraw_at_return}; "
+                                   f"candidate_started_before_return={candidate_started_before_return}; "
                                    f"wallpapers={swaybg_calls}; palette={palette_calls}; "
                                    f"integrations={integration_calls}; "
                                    f"dark={os.readlink(current / 'dark')}; "
-                                   f"request={request_token!r}; ack={ack_token!r}; "
+                                   f"request={request_token!r}; ack={ack_record!r}; "
                                    f"runtime={sorted(path.name for path in runtime.iterdir())}").strip()
             else:
                 sync_detail = "wallpaper helper did not log completed startup integrations before the deadline"
@@ -1290,7 +1318,7 @@ with tempfile.TemporaryDirectory() as stage:
                 _, helper_error = wallpaper_helper.communicate(timeout=5)
         if helper_error.strip():
             sync_detail = f"{sync_detail}; helper stderr: {helper_error.strip()[-240:]}".strip("; ")
-        expect("same-mode refresh waits for wallpaper acknowledgement after redraw of committed target",
+        expect("same-mode refresh records its candidate before returning unconfirmed and retains the previous wallpaper",
                synced, sync_detail)
 
         failure_home = sync_root / "failure-home"
@@ -1339,7 +1367,8 @@ with tempfile.TemporaryDirectory() as stage:
                 request_path = failure_runtime / "gooarchy-wallpaper.request"
                 ack_path = failure_runtime / "gooarchy-wallpaper.ack"
                 request_token = request_path.read_text().strip() if request_path.is_file() else ""
-                ack_token = ack_path.read_text().strip() if ack_path.is_file() else ""
+                ack_record = read_wallpaper_ack(ack_path)
+                ack_token = ack_record.get("token", "")
                 swaybg_calls = failure_wallpaper_log.read_text().splitlines()
                 failure_survived = (
                     failed_refresh.returncode != 0 and failure_helper.poll() is None
@@ -1349,7 +1378,7 @@ with tempfile.TemporaryDirectory() as stage:
                 )
                 failure_detail = (f"refresh_rc={failed_refresh.returncode}; "
                                   f"alive={failure_helper.poll() is None}; "
-                                  f"request={request_token!r}; ack={ack_token!r}; "
+                                  f"request={request_token!r}; ack={ack_record!r}; "
                                   f"wallpapers={swaybg_calls}")
 
                 (failure_home / "fail-integrations").unlink()

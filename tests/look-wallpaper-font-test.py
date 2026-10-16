@@ -170,6 +170,14 @@ expect("refresh accepts the extended applied-image acknowledgement",
        refresh._wallpaper_ack_token('{"token":"abc","applied":"/wall/a.webp"}') == "abc")
 expect("refresh remains compatible with its former token-only acknowledgement",
        refresh._wallpaper_ack_token("abc\n") == "abc")
+expect("refresh confirms only an ack whose applied and requested images match",
+       refresh._wallpaper_ack_application_confirmed(
+           '{"token":"abc","applied":"/wall/a.webp","requested":"/wall/a.webp"}')
+       and not refresh._wallpaper_ack_application_confirmed(
+           '{"token":"abc","applied":null,"requested":"/wall/a.webp"}')
+       and not refresh._wallpaper_ack_application_confirmed(
+           '{"token":"abc","applied":"/wall/old.webp","requested":"/wall/new.webp"}')
+       and not refresh._wallpaper_ack_application_confirmed("abc\n"))
 
 
 class WallpaperChild:
@@ -205,6 +213,31 @@ else:
     expect("decode failure leaves the working wallpaper owner alive", False,
            "replacement unexpectedly succeeded")
 
+old_wallpaper = WallpaperChild()
+unconfirmed_candidate = WallpaperChild()
+try:
+    wallpaper.replace_wallpaper(
+        old_wallpaper, Path("slow.png"), start=lambda _image: unconfirmed_candidate,
+        wait=lambda process, image: wallpaper.wait_for_swaybg_start(
+            process, image, timeout=0),
+    )
+except wallpaper.WallpaperApplicationUnconfirmed:
+    expect("an unconfirmed replacement stops only its candidate and keeps the previous wallpaper",
+           not old_wallpaper.terminated and unconfirmed_candidate.terminated)
+else:
+    expect("an unconfirmed replacement stops only its candidate and keeps the previous wallpaper", False,
+           "replacement unexpectedly claimed success")
+
+late_failure_candidate = WallpaperChild()
+failure_before = wallpaper.swaybg_load_failure(late_failure_candidate)
+late_failure_candidate._gooarchy_image_load_error.append(
+    "Failed to load image: slow-decode.png")
+late_failure_candidate._gooarchy_image_load_failure.set()
+expect("an image-load error arriving after the initial probe remains observable",
+       failure_before is None
+       and wallpaper.swaybg_load_failure(late_failure_candidate)
+       == "Failed to load image: slow-decode.png")
+
 expect("swaybg's decode and image-read failures are recognized",
        wallpaper._swaybg_load_error("Failed to load background image (decode error)")
        and wallpaper._swaybg_load_error("Failed to read background image: invalid PNG")
@@ -231,8 +264,8 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-font-write-") as temporary:
     ghostty_dir = config / "ghostty"
     ghostty_dir.mkdir(parents=True)
     user_config = ghostty_dir / "config"
-    original = "font-size = 13\nbackground = '#123456'\n"
-    user_config.write_text(original)
+    original = b"font-size = 13\r\nbackground = '#123456'\r\n"
+    user_config.write_bytes(original)
     integrations.CONFIG = config
     integrations.OMARCHY = False
     output = []
@@ -255,13 +288,47 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-font-write-") as temporary:
     expect("font set writes valid owned fragments and preserves the existing config bytes",
            code == 0 and parsed.findtext(".//edit/string") == "Fira Code"
            and fragment == 'font-family = ""\nfont-family = "Fira Code"\n'
-           and user_config.read_text().startswith(original)
-           and user_config.read_text().count(integrations.GHOSTTY_INCLUDE_MARKER) == 1
+           and user_config.read_bytes().startswith(original)
+           and user_config.read_bytes().count(integrations.GHOSTTY_INCLUDE_MARKER.encode()) == 1
            and "Saved monospace family: Fira Code" in "".join(output), errors)
 
     expect("the marked Ghostty include is idempotent",
-           integrations._ghostty_include(user_config.read_text(), ghostty_fragment)
-           == user_config.read_text())
+           integrations._ghostty_include(user_config.read_bytes().decode("utf-8"), ghostty_fragment)
+           == user_config.read_bytes().decode("utf-8"))
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-font-crlf-rollback-") as temporary:
+    config = Path(temporary) / "config"
+    ghostty_dir = config / "ghostty"
+    ghostty_dir.mkdir(parents=True)
+    user_config = ghostty_dir / "config"
+    original = b"# user config\r\nfont-size = 13\r\nbackground = '#123456'\r\n"
+    user_config.write_bytes(original)
+    integrations.CONFIG = config
+    integrations.OMARCHY = False
+    real_atomic_write = integrations.atomic_write
+    failed_after_config_write = {"value": False}
+
+    def fail_after_config_write(path, content, mode=0o600):
+        real_atomic_write(path, content, mode=mode)
+        if Path(path) == user_config and not failed_after_config_write["value"]:
+            failed_after_config_write["value"] = True
+            raise OSError("simulated failure after Ghostty config replacement")
+
+    with patch.object(integrations, "font_inventory", return_value=["Fira Code"]), \
+            patch.object(integrations, "ghostty_configured_family",
+                         side_effect=[("Monospace", None), ("Fira Code", None)]), \
+            patch.object(integrations, "fontconfig_effective_family", return_value="Fira Code"), \
+            patch.object(integrations, "reload_ghostty", return_value=(True, "no session client")), \
+            patch.object(integrations.shutil, "which", return_value="/tools/ghostty"), \
+            patch.object(integrations, "atomic_write", side_effect=fail_after_config_write):
+        errors = []
+        code = integrations.set_font(
+            "Fira Code", output=type("Out", (), {"write": lambda self, text: None})(),
+            error=type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+        )
+    expect("font rollback restores CRLF Ghostty config bytes exactly",
+           code == 1 and failed_after_config_write["value"] and user_config.read_bytes() == original,
+           errors)
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-font-no-write-") as temporary:
     root = Path(temporary)

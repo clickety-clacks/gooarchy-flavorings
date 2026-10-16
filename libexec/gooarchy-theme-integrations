@@ -40,7 +40,8 @@ def atomic_write(path, text, mode=0o600):
         raise OSError(f"{path} is not owned by this user")
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".gooarchy")
     try:
-        with os.fdopen(fd, "w") as stream:
+        mode_for_open = "wb" if isinstance(text, bytes) else "w"
+        with os.fdopen(fd, mode_for_open) as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
@@ -417,7 +418,9 @@ def _snapshot(path):
         raise RuntimeError(f"refusing symlinked configuration file: {path}")
     try:
         metadata = path.stat()
-        return (path.read_text(encoding="utf-8"), stat.S_IMODE(metadata.st_mode))
+        content = path.read_bytes()
+        content.decode("utf-8")  # validate without universal-newline conversion
+        return (content, stat.S_IMODE(metadata.st_mode))
     except FileNotFoundError:
         return None
     except UnicodeError as error:
@@ -586,9 +589,10 @@ def set_font(family, output=None, error=None, run=None):
     try:
         atomic_write(fontconfig_path, _fontconfig_fragment(family), mode=0o600)
         atomic_write(ghostty_fragment, _ghostty_fragment(family), mode=0o600)
-        original_config = "" if snapshots[config_path] is None else snapshots[config_path][0]
-        updated_config = _ghostty_include(original_config, ghostty_fragment)
-        if updated_config != original_config:
+        original_config_bytes = b"" if snapshots[config_path] is None else snapshots[config_path][0]
+        original_config = original_config_bytes.decode("utf-8")
+        updated_config = _ghostty_include(original_config, ghostty_fragment).encode("utf-8")
+        if updated_config != original_config_bytes:
             atomic_write(config_path, updated_config, mode=0o600)
     except (OSError, RuntimeError) as exception:
         restore_errors = []
