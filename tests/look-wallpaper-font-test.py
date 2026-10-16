@@ -215,18 +215,14 @@ else:
 
 old_wallpaper = WallpaperChild()
 unconfirmed_candidate = WallpaperChild()
-try:
-    wallpaper.replace_wallpaper(
-        old_wallpaper, Path("slow.png"), start=lambda _image: unconfirmed_candidate,
-        wait=lambda process, image: wallpaper.wait_for_swaybg_start(
-            process, image, timeout=0),
-    )
-except wallpaper.WallpaperApplicationUnconfirmed:
-    expect("an unconfirmed replacement stops only its candidate and keeps the previous wallpaper",
-           not old_wallpaper.terminated and unconfirmed_candidate.terminated)
-else:
-    expect("an unconfirmed replacement stops only its candidate and keeps the previous wallpaper", False,
-           "replacement unexpectedly claimed success")
+replacement, confirmed = wallpaper.replace_wallpaper(
+    old_wallpaper, Path("slow.png"), start=lambda _image: unconfirmed_candidate,
+    wait=lambda process, image: wallpaper.wait_for_swaybg_start(
+        process, image, timeout=0),
+)
+expect("an unconfirmed replacement keeps the transition attempt and previous process without claiming success",
+       replacement is unconfirmed_candidate and not confirmed
+       and not old_wallpaper.terminated and not unconfirmed_candidate.terminated)
 
 late_failure_candidate = WallpaperChild()
 failure_before = wallpaper.swaybg_load_failure(late_failure_candidate)
@@ -236,6 +232,8 @@ late_failure_candidate._gooarchy_image_load_failure.set()
 expect("an image-load error arriving after the initial probe remains observable",
        failure_before is None
        and wallpaper.swaybg_load_failure(late_failure_candidate)
+       == "Failed to load image: slow-decode.png"
+       and wallpaper.swaybg_process_failure(late_failure_candidate)
        == "Failed to load image: slow-decode.png")
 
 expect("swaybg's decode and image-read failures are recognized",

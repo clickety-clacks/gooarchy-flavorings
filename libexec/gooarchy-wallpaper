@@ -191,6 +191,18 @@ def swaybg_load_failure(process):
     return detail[-1] if detail else "swaybg reported an image-load failure"
 
 
+def swaybg_process_failure(process):
+    failure = swaybg_load_failure(process)
+    if failure:
+        return failure
+    if process is None:
+        return None
+    return_code = process.poll()
+    if return_code is not None:
+        return f"swaybg exited with status {return_code}"
+    return None
+
+
 def wait_for_swaybg_start(process, image, timeout=1.0):
     """Observe early failure; liveness without a positive apply result stays unknown."""
     failure = getattr(process, "_gooarchy_image_load_failure", None)
@@ -217,16 +229,18 @@ def wait_for_swaybg_start(process, image, timeout=1.0):
 
 
 def replace_wallpaper(current, image, start=draw, wait=wait_for_swaybg_start):
-    """Retain the prior wallpaper unless the replacement application is confirmed."""
+    """Keep an unconfirmed attempt running without claiming it was applied."""
     candidate = start(image)
     try:
         wait(candidate, image)
+    except WallpaperApplicationUnconfirmed:
+        return candidate, False
     except BaseException:
         stop_child(candidate)
         raise
     if current is not None:
         stop_child(current)
-    return candidate
+    return candidate, True
 
 
 def update_integrations():
@@ -520,6 +534,12 @@ def run_owner():
     lock_fd, request_path, ack_path = open_runtime_control()
     monitor = None
     swaybg = None
+    fallback_swaybg = None
+    fallback_image = None
+    fallback_applied_image = None
+    swaybg_image = None
+    desired_image = None
+    applied_image = None
     try:
         monitor = subprocess.Popen(
             ["gsettings", "monitor", "org.gnome.desktop.interface", "color-scheme"],
@@ -527,13 +547,12 @@ def run_owner():
         )
         _, image, _, _ = wallpaper_state(variant_path())
         swaybg_image = str(image)
-        applied_image = None
+        desired_image = swaybg_image
         try:
             swaybg = draw(image)
             wait_for_swaybg_start(swaybg, image)
         except WallpaperApplicationUnconfirmed as exception:
-            # Keep the initial process alive as the best available display attempt, but do not
-            # claim its image is visible. Later replacements still preserve this process.
+            # Keep the initial process as an unconfirmed display attempt.
             print(f"Gooarchy wallpaper application is unconfirmed: {exception}", file=sys.stderr)
         except (OSError, RuntimeError, subprocess.SubprocessError) as exception:
             stop_child(swaybg)
@@ -542,19 +561,35 @@ def run_owner():
         ack = read_runtime_ack(ack_path)
         last_request = ack["token"]
         last_completed_request = last_request
-        write_runtime_ack(ack_path, last_completed_request, applied_image, requested=image)
+        write_runtime_ack(ack_path, last_completed_request, applied_image, requested=desired_image)
         theme_signature = current_theme_signature()
         update_integrations()
         while True:
-            late_failure = swaybg_load_failure(swaybg)
+            fallback_failure = swaybg_process_failure(fallback_swaybg)
+            if fallback_failure:
+                print(f"Gooarchy wallpaper fallback failed: {fallback_failure}", file=sys.stderr)
+                stop_child(fallback_swaybg)
+                fallback_swaybg = None
+                fallback_image = None
+                fallback_applied_image = None
+
+            late_failure = swaybg_process_failure(swaybg)
             if late_failure:
                 print(f"Gooarchy wallpaper application failed; current image is unknown: {late_failure}",
                       file=sys.stderr)
                 stop_child(swaybg)
-                swaybg = None
-                applied_image = None
+                if fallback_swaybg is not None:
+                    swaybg = fallback_swaybg
+                    swaybg_image = fallback_image
+                    applied_image = fallback_applied_image
+                    fallback_swaybg = None
+                    fallback_image = None
+                    fallback_applied_image = None
+                else:
+                    swaybg = None
+                    applied_image = None
                 write_runtime_ack(ack_path, last_completed_request, applied_image,
-                                  requested=swaybg_image)
+                                  requested=desired_image)
             readers = [monitor.stdout] if monitor is not None and monitor.stdout is not None else []
             ready, _, _ = select.select(readers, [], [], 1.0)
             request = read_runtime_token(request_path)
@@ -568,6 +603,7 @@ def run_owner():
                     redraw = True
             elif (not redraw
                   and (swaybg is None or swaybg.poll() is not None)
+                  and (fallback_swaybg is None or fallback_swaybg.poll() is not None)
                   and (monitor is None or monitor.poll() is not None)):
                 break
             new_signature = current_theme_signature()
@@ -580,12 +616,26 @@ def run_owner():
             requested_image = None
             try:
                 _, requested_image, _, _ = wallpaper_state(variant_path())
-                swaybg = replace_wallpaper(swaybg, requested_image)
-                swaybg_image = str(requested_image)
-                applied_image = str(requested_image)
-            except WallpaperApplicationUnconfirmed as exception:
-                print(f"Gooarchy wallpaper application is unconfirmed; keeping the previous image: {exception}",
-                      file=sys.stderr)
+                desired_image = str(requested_image)
+                replacement, confirmed = replace_wallpaper(swaybg, requested_image)
+                if confirmed:
+                    stop_child(fallback_swaybg)
+                    fallback_swaybg = None
+                    fallback_image = None
+                    fallback_applied_image = None
+                    swaybg = replacement
+                    swaybg_image = desired_image
+                    applied_image = desired_image
+                else:
+                    stop_child(fallback_swaybg)
+                    fallback_swaybg = swaybg
+                    fallback_image = swaybg_image
+                    fallback_applied_image = applied_image
+                    swaybg = replacement
+                    swaybg_image = desired_image
+                    applied_image = None
+                    print("Gooarchy wallpaper application is unconfirmed; keeping the prior process as fallback.",
+                          file=sys.stderr)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exception:
                 print(f"Gooarchy wallpaper refresh failed; keeping the previous image: {exception}",
                       file=sys.stderr)
@@ -597,12 +647,13 @@ def run_owner():
             if requested and integrations_updated:
                 last_completed_request = request
             write_runtime_ack(ack_path, last_completed_request, applied_image,
-                              requested=requested_image)
+                              requested=desired_image)
         if swaybg is not None:
             swaybg.wait()
     finally:
         stop_child(monitor)
         stop_child(swaybg)
+        stop_child(fallback_swaybg)
         if lock_fd is not None:
             os.close(lock_fd)
     return 0
