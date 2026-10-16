@@ -566,7 +566,9 @@ def run_owner():
                     monitor.stdout = None
                 else:
                     redraw = True
-            elif swaybg is not None and swaybg.poll() is not None and not redraw:
+            elif (not redraw
+                  and (swaybg is None or swaybg.poll() is not None)
+                  and (monitor is None or monitor.poll() is not None)):
                 break
             new_signature = current_theme_signature()
             if new_signature != theme_signature:
