@@ -182,9 +182,34 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-wallpaper-apply-report-") as t
             type("Err", (), {"write": lambda self, text: errors.append(text)})(),
             run=lambda command, **kwargs: result(stderr="refresh failed", returncode=1),
         )
-    expect("refresh failure distinguishes saved choice from live failure",
-           code == 1 and "Saved wallpaper: b.png" in "".join(errors)
+    expect("optional refresh failure warns without failing a successfully saved wallpaper choice",
+           code == 0 and "Saved wallpaper: b.png" in "".join(errors)
            and "refresh failed" in "".join(errors))
+
+    output.clear()
+    errors.clear()
+    with patch.object(wallpaper, "wallpaper_owner_active", return_value=True), \
+            patch.object(wallpaper, "applied_wallpaper", return_value=str(image)):
+        code = wallpaper.set_wallpaper(
+            variant, "b.png", type("Out", (), {"write": lambda self, text: output.append(text)})(),
+            type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+            run=lambda command, **kwargs: result(stderr="Scottland reapply failed", returncode=1),
+        )
+    expect("optional integration failure does not fail a saved wallpaper that was applied",
+           code == 0 and "Saved and applied wallpaper: b.png" in "".join(output)
+           and "optional theme integration failed" in "".join(errors)
+           and "Scottland reapply failed" in "".join(errors))
+
+    output.clear()
+    errors.clear()
+    with patch.object(wallpaper, "atomic_write_preferences", side_effect=OSError("read-only")):
+        code = wallpaper.set_wallpaper(
+            variant, "b.png", type("Out", (), {"write": lambda self, text: output.append(text)})(),
+            type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+            run=lambda command, **kwargs: result(),
+        )
+    expect("failure to save the requested wallpaper choice still returns failure",
+           code != 0 and "Wallpaper was not saved" in "".join(errors))
 
 expect("refresh accepts the extended applied-image acknowledgement",
        refresh._wallpaper_ack_token('{"token":"abc","applied":"/wall/a.webp"}') == "abc")
@@ -217,6 +242,68 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-refresh-unconfirmed-timeout-")
     finally:
         fcntl.flock(held_lock, fcntl.LOCK_UN)
         os.close(held_lock)
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-refresh-optional-scottland-failure-") as temporary:
+    root = Path(temporary)
+    current = root / "config" / "gooarchy" / "current-theme"
+    light = root / "themes" / "new-light"
+    dark = root / "themes" / "new-dark"
+    light.mkdir(parents=True)
+    dark.mkdir(parents=True)
+    lookup = root / "gooarchy-theme-lookup"
+    hooks = root / "scottland"
+    command = hooks / "libexec" / "scottland-color-scheme"
+    command.parent.mkdir(parents=True)
+    command.write_text("mocked command\n")
+    calls = []
+    wallpaper_steps = []
+    errors = io.StringIO()
+
+    def optional_failure_run(argv, **kwargs):
+        calls.append(tuple(argv))
+        if tuple(argv) == (str(lookup), "--pair"):
+            return result(stdout=json.dumps({"light": str(light), "dark": str(dark)}))
+        return result(stderr="busy", returncode=1)
+
+    with patch.dict(os.environ, {
+            "OMARCHY_PATH": str(root / "omarchy-not-installed"),
+            "XDG_RUNTIME_DIR": str(root / "runtime"),
+            "WAYLAND_DISPLAY": "wayland-test",
+            "SCOTTLAND_HOOKS": str(hooks),
+    }), patch.object(refresh, "_refresh_running_wallpaper",
+                     side_effect=lambda: wallpaper_steps.append("continued")), \
+            redirect_stderr(errors):
+        refresh_code = refresh.refresh(current, lookup, run=optional_failure_run)
+
+    expect("failed optional Scottland reapply warns while theme links and wallpaper refresh continue",
+           refresh_code == 0
+           and os.readlink(current / "light") == str(light)
+           and os.readlink(current / "dark") == str(dark)
+           and calls == [(str(lookup), "--pair"), (str(command), "once")]
+           and wallpaper_steps == ["continued"]
+           and "Scottland color-scheme reapply failed: busy" in errors.getvalue()
+           and "theme links were updated and wallpaper refresh will continue" in errors.getvalue())
+
+    command.unlink()
+    calls.clear()
+    wallpaper_steps.clear()
+    errors = io.StringIO()
+    with patch.dict(os.environ, {
+            "OMARCHY_PATH": str(root / "omarchy-not-installed"),
+            "XDG_RUNTIME_DIR": str(root / "runtime"),
+            "WAYLAND_DISPLAY": "wayland-test",
+            "SCOTTLAND_HOOKS": str(hooks),
+    }), patch.object(refresh, "_refresh_running_wallpaper",
+                     side_effect=lambda: wallpaper_steps.append("continued")), \
+            redirect_stderr(errors):
+        missing_code = refresh.refresh(current, lookup, run=optional_failure_run)
+
+    expect("unavailable optional Scottland reapply warns while wallpaper refresh continues",
+           missing_code == 0
+           and calls == [(str(lookup), "--pair")]
+           and wallpaper_steps == ["continued"]
+           and "Scottland color-scheme reapply is unavailable" in errors.getvalue()
+           and "theme links were updated and wallpaper refresh will continue" in errors.getvalue())
 
 
 class WallpaperChild:

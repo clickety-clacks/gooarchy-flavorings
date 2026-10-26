@@ -33,14 +33,22 @@ def _reapply_scottland_palette(run):
     hooks = Path(os.environ.get("SCOTTLAND_HOOKS") or "/usr/lib/scottland")
     command = hooks / "libexec" / "scottland-color-scheme"
     if not command.is_file():
-        raise RuntimeError(f"Scottland color-scheme reapply is unavailable: {command}")
+        print(f"Scottland color-scheme reapply is unavailable: {command}; "
+              "theme links were updated and wallpaper refresh will continue",
+              file=sys.stderr)
+        return
     try:
         result = run([str(command), "once"], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(f"Scottland color-scheme reapply failed: {error}") from error
+        print(f"Scottland color-scheme reapply failed: {error}; "
+              "theme links were updated and wallpaper refresh will continue",
+              file=sys.stderr)
+        return
     if result.returncode != 0:
         detail = result.stderr.strip() or "command returned a failure status"
-        raise RuntimeError(f"Scottland color-scheme reapply failed: {detail}")
+        print(f"Scottland color-scheme reapply failed: {detail}; "
+              "theme links were updated and wallpaper refresh will continue",
+              file=sys.stderr)
 
 
 def _wallpaper_ack_token(content):

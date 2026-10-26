@@ -431,11 +431,13 @@ def request_live_application(expected, output, error, run=subprocess.run):
         applied = applied_wallpaper()
         if applied == str(expected):
             print(f"Saved and applied wallpaper: {expected.name}", file=output)
-            print(f"theme refresh could not be confirmed: {exception}", file=error)
+            print(f"optional theme refresh failed after wallpaper application: {exception}",
+                  file=error)
         else:
             print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
-            print(f"theme refresh failed: {exception}", file=error)
-        return 1
+            print(f"optional theme refresh failed; the saved choice remains: {exception}",
+                  file=error)
+        return 0
     if result.stdout:
         output.write(result.stdout)
     if result.stderr:
@@ -444,10 +446,14 @@ def request_live_application(expected, output, error, run=subprocess.run):
     applied = applied_wallpaper() if owner_active else None
     if result.returncode != 0:
         if applied == str(expected):
-            print(f"Wallpaper applied: {expected.name}; another theme integration failed.", file=error)
+            print(f"Saved and applied wallpaper: {expected.name}", file=output)
+            print("optional theme integration failed after wallpaper application; "
+                  "the wallpaper remains applied", file=error)
         else:
-            print(f"Saved wallpaper: {expected.name}; live application failed or is unconfirmed.", file=error)
-        return 1
+            print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
+            print("optional theme refresh failed; the saved choice remains and may apply "
+                  "when its owner next runs", file=error)
+        return 0
     if applied == str(expected):
         print(f"Saved and applied wallpaper: {expected.name}", file=output)
     elif not owner_active:
