@@ -574,7 +574,11 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-font-inventory-") as temporary
         calls.append(command)
         return result(stdout="Fira Code\t100\nIBM Plex Mono\t100\nProportional Sans\t0\n")
 
-    with patch.object(integrations.shutil, "which", return_value=None):
+    with patch.object(
+            integrations.shutil,
+            "which",
+            side_effect=lambda name: "/tools/fc-list" if name == "fc-list" else None,
+    ):
         families = integrations.font_inventory(run=run)
         output = []
         errors = []
