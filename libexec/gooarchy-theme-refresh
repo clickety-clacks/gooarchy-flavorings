@@ -33,14 +33,22 @@ def _reapply_scottland_palette(run):
     hooks = Path(os.environ.get("SCOTTLAND_HOOKS") or "/usr/lib/scottland")
     command = hooks / "libexec" / "scottland-color-scheme"
     if not command.is_file():
-        raise RuntimeError(f"Scottland color-scheme reapply is unavailable: {command}")
+        print(f"Scottland color-scheme reapply is unavailable: {command}; "
+              "theme links were updated and wallpaper refresh will continue",
+              file=sys.stderr)
+        return
     try:
         result = run([str(command), "once"], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(f"Scottland color-scheme reapply failed: {error}") from error
+        print(f"Scottland color-scheme reapply failed: {error}; "
+              "theme links were updated and wallpaper refresh will continue",
+              file=sys.stderr)
+        return
     if result.returncode != 0:
         detail = result.stderr.strip() or "command returned a failure status"
-        raise RuntimeError(f"Scottland color-scheme reapply failed: {detail}")
+        print(f"Scottland color-scheme reapply failed: {detail}; "
+              "theme links were updated and wallpaper refresh will continue",
+              file=sys.stderr)
 
 
 def _wallpaper_ack_token(content):
@@ -126,7 +134,9 @@ def _refresh_running_wallpaper():
         if acknowledged:
             if application_confirmed:
                 return
-            raise RuntimeError("running wallpaper processed the refresh but live application is unconfirmed")
+            print("running wallpaper processed the refresh but live application is unconfirmed",
+                  file=sys.stderr)
+            return
         try:
             active_fd = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError:
@@ -142,7 +152,8 @@ def _refresh_running_wallpaper():
         finally:
             os.close(active_fd)
         time.sleep(0.05)
-    raise RuntimeError("running wallpaper did not complete its refresh within five seconds")
+    print("running wallpaper did not complete its refresh within five seconds; "
+          "live application is unconfirmed", file=sys.stderr)
 
 
 def _prepare_location(current):
@@ -200,8 +211,16 @@ def refresh(current_theme=CURRENT_THEME, lookup=LOOKUP, run=subprocess.run):
                     temp.unlink()
                 except FileNotFoundError:
                     pass
-        _reapply_scottland_palette(run)
-        _refresh_running_wallpaper()
+        try:
+            _reapply_scottland_palette(run)
+        except Exception as error:
+            print(f"Scottland color-scheme reapply failed: {error}; theme links were updated and "
+                  "wallpaper refresh will continue", file=sys.stderr)
+        try:
+            _refresh_running_wallpaper()
+        except Exception as error:
+            print(f"Gooarchy wallpaper refresh failed: {error}; theme links remain updated.",
+                  file=sys.stderr)
     finally:
         os.close(lock_fd)
     return 0

@@ -2,6 +2,7 @@
 """Test Gooarchy's Strata theme and Chromium policy integration in temporary paths."""
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 
@@ -95,6 +97,17 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-theme-command-") as temporary:
            mode_writes == ["set org.gnome.desktop.interface color-scheme prefer-light",
                            "set org.gnome.desktop.interface color-scheme prefer-dark",
                            "set org.gnome.desktop.interface color-scheme prefer-light"], mode_writes)
+
+    (config / "scottland" / "solar.ini").write_text("[solar]\nenabled = true\n")
+    integration.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >>\"$HOME/integration.log\"\nexit 7\n")
+    integration.chmod(0o755)
+    failed_optional = subprocess.run([script, "dark"], env=env, capture_output=True, text=True)
+    expect("a failed optional theme integration keeps the selected mode and Sunlight note",
+           failed_optional.returncode == 0
+           and (home / "gsettings.log").read_text().splitlines()[-1].endswith("prefer-dark")
+           and "Strata/Chromium theme integrations" in failed_optional.stderr
+           and "schedule stays on after a manual theme pick" in failed_optional.stderr,
+           failed_optional.stderr)
 
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-strata-default-") as temporary:
@@ -247,12 +260,16 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-strata-update-failure-") as te
     home = Path(temporary)
     home.mkdir(exist_ok=True)
     configure(home)
+    errors = io.StringIO()
     with patch.object(integrations, "palette", return_value={"accent": "#123456"}), \
             patch.object(integrations, "update_strata", side_effect=OSError("cannot write Strata theme")), \
-            patch.object(integrations, "update_chromium", return_value=True) as update_chromium:
-        result = integrations.apply("dark")
-    expect("a failed Strata update fails the integration even when Chromium succeeds",
-           result == 1 and update_chromium.call_args.args == ("#123456",), result)
+            patch.object(integrations, "update_chromium", side_effect=OSError("Chromium is unavailable")) as update_chromium, \
+            redirect_stderr(errors):
+        result_code = integrations.apply("dark")
+    expect("failed Strata and Chromium updates warn without failing the selected mode",
+           result_code == 0 and update_chromium.call_args.args == ("#123456",)
+           and "couldn't update Strata" in errors.getvalue()
+           and "Chromium theme integration failed" in errors.getvalue(), errors.getvalue())
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-strata-user-choice-skip-"):
     with patch.object(integrations, "palette", return_value={"accent": "#123456"}), \
