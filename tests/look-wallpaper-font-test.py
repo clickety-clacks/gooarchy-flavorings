@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Focused behavior checks for Gooarchy wallpaper and installed monospace choices."""
+import fcntl
+import io
 import importlib.machinery
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import xml.etree.ElementTree as ElementTree
+from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -149,9 +153,25 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-wallpaper-apply-report-") as t
             type("Err", (), {"write": lambda self, text: errors.append(text)})(),
             run=lambda command, **kwargs: result(),
         )
-    expect("an active owner without an applied-image acknowledgement is unconfirmed",
-           code == 1 and "live application is unconfirmed" in "".join(errors)
+    expect("an active owner without an applied-image acknowledgement warns without failing the saved choice",
+           code == 0 and "live application is unconfirmed" in "".join(errors)
            and "will apply when the wallpaper owner starts" not in "".join(output))
+
+    output.clear()
+    errors.clear()
+    def timed_out_refresh(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 20))
+
+    with patch.object(wallpaper, "wallpaper_owner_active", return_value=True), \
+            patch.object(wallpaper, "applied_wallpaper", return_value=None):
+        code = wallpaper.set_wallpaper(
+            variant, "b.png", type("Out", (), {"write": lambda self, text: output.append(text)})(),
+            type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+            run=timed_out_refresh,
+        )
+    expect("an unconfirmed refresh timeout warns without failing the saved choice",
+           code == 0 and "live application is unconfirmed" in "".join(errors)
+           and "timed out" in "".join(errors))
 
     output.clear()
     errors.clear()
@@ -178,6 +198,25 @@ expect("refresh confirms only an ack whose applied and requested images match",
        and not refresh._wallpaper_ack_application_confirmed(
            '{"token":"abc","applied":"/wall/old.webp","requested":"/wall/new.webp"}')
        and not refresh._wallpaper_ack_application_confirmed("abc\n"))
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-refresh-unconfirmed-timeout-") as temporary:
+    runtime = Path(temporary)
+    lock_path = runtime / refresh.WALLPAPER_RUNTIME_LOCK
+    held_lock = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    errors = io.StringIO()
+    try:
+        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(runtime),
+                                     "WAYLAND_DISPLAY": "wayland-test"}), \
+                patch.object(refresh.time, "monotonic", side_effect=[0, 6]), \
+                redirect_stderr(errors):
+            refresh._refresh_running_wallpaper()
+        expect("an active owner's refresh timeout warns and continues without claiming application",
+               "live application is unconfirmed" in errors.getvalue()
+               and (runtime / refresh.WALLPAPER_REFRESH_REQUEST).is_file())
+    finally:
+        fcntl.flock(held_lock, fcntl.LOCK_UN)
+        os.close(held_lock)
 
 
 class WallpaperChild:

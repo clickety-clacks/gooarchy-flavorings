@@ -1320,7 +1320,7 @@ with tempfile.TemporaryDirectory() as stage:
                 healthy_palette_calls = (healthy_home / "palette.log").read_text().splitlines()
                 healthy_integrations = healthy_integration_log.read_text().splitlines()
                 healthy_transition = (
-                    healthy_result.returncode != 0
+                    healthy_result.returncode == 0
                     and "unconfirmed" in healthy_result.stderr.lower()
                     and len(healthy_calls) >= 2
                     and "healthy-dark/backgrounds/healthy.webp" in healthy_calls[-1]
@@ -1402,7 +1402,7 @@ with tempfile.TemporaryDirectory() as stage:
                 candidate_running_before_late_failure = (
                     len(pids) >= 2 and pid_is_running(candidate_pid))
                 transition_attempted = (
-                    sync_result.returncode != 0 and "unconfirmed" in sync_result.stderr.lower()
+                    sync_result.returncode == 0 and "unconfirmed" in sync_result.stderr.lower()
                     and len(swaybg_calls) >= 2
                     and "old-dark/backgrounds/old.webp" in swaybg_calls[0]
                     and candidate_started_before_return and candidate_running_before_late_failure
@@ -1516,7 +1516,9 @@ with tempfile.TemporaryDirectory() as stage:
                 ack_token = ack_record.get("token", "")
                 swaybg_calls = failure_wallpaper_log.read_text().splitlines()
                 failure_survived = (
-                    failed_refresh.returncode != 0 and failure_helper.poll() is None
+                    failed_refresh.returncode == 0
+                    and "unconfirmed" in failed_refresh.stderr.lower()
+                    and failure_helper.poll() is None
                     and request_token and ack_token != request_token
                     and any("old-dark/backgrounds/old.webp" in line for line in swaybg_calls)
                     and any("broken-dark/backgrounds/broken.webp" in line for line in swaybg_calls)
@@ -1551,8 +1553,9 @@ with tempfile.TemporaryDirectory() as stage:
                 _, failure_stderr = failure_helper.communicate(timeout=5)
         if failure_stderr.strip():
             failure_detail = f"{failure_detail}; helper stderr: {failure_stderr.strip()[-240:]}".strip("; ")
-        expect("failed requested integrations leave wallpaper alive without acknowledging the refresh",
-               failure_survived, failure_detail)
+        expect("failed integrations are reported while an uncertain wallpaper refresh continues",
+               failure_survived and "theme app integrations failed" in failure_stderr.lower(),
+               failure_detail)
         expect("wallpaper continues following mode changes after a failed requested refresh",
                mode_followed, failure_detail)
 

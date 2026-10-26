@@ -126,7 +126,9 @@ def _refresh_running_wallpaper():
         if acknowledged:
             if application_confirmed:
                 return
-            raise RuntimeError("running wallpaper processed the refresh but live application is unconfirmed")
+            print("running wallpaper processed the refresh but live application is unconfirmed",
+                  file=sys.stderr)
+            return
         try:
             active_fd = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError:
@@ -142,7 +144,8 @@ def _refresh_running_wallpaper():
         finally:
             os.close(active_fd)
         time.sleep(0.05)
-    raise RuntimeError("running wallpaper did not complete its refresh within five seconds")
+    print("running wallpaper did not complete its refresh within five seconds; "
+          "live application is unconfirmed", file=sys.stderr)
 
 
 def _prepare_location(current):

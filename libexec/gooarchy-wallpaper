@@ -418,6 +418,15 @@ def status_for_current(variant, output, error):
 def request_live_application(expected, output, error, run=subprocess.run):
     try:
         result = run([str(REFRESH)], capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired as exception:
+        applied = applied_wallpaper()
+        if applied == str(expected):
+            print(f"Saved and applied wallpaper: {expected.name}", file=output)
+            print(f"theme refresh timed out after application was recorded: {exception}", file=error)
+        else:
+            print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
+            print(f"theme refresh timed out; live application is unconfirmed: {exception}", file=error)
+        return 0
     except (OSError, subprocess.SubprocessError) as exception:
         applied = applied_wallpaper()
         if applied == str(expected):
@@ -443,12 +452,8 @@ def request_live_application(expected, output, error, run=subprocess.run):
         print(f"Saved and applied wallpaper: {expected.name}", file=output)
     elif not owner_active:
         print(f"Saved wallpaper: {expected.name}; it will apply when the wallpaper owner starts.", file=output)
-    elif applied is None:
-        print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
-        return 1
     else:
         print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
-        return 1
     return 0
 
 
