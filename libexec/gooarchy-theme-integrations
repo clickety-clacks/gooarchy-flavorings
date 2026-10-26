@@ -292,14 +292,9 @@ def ghostty_font_families(executable=None, run=None):
 
 
 def font_inventory(run=None):
+    """List installed monospace families without requiring a Ghostty consumer."""
     run = run or subprocess.run
-    fontconfig = set(fontconfig_monospace_families(run=run))
-    ghostty = ghostty_font_families(run=run)
-    if ghostty is None:
-        raise RuntimeError("Ghostty is unavailable; compatible installed families cannot be confirmed")
-    ghostty_by_casefold = {family.casefold(): family for family in ghostty}
-    return sorted((family for family in fontconfig if family.casefold() in ghostty_by_casefold),
-                  key=os.fsencode)
+    return fontconfig_monospace_families(run=run)
 
 
 def read_saved_font():
@@ -511,7 +506,7 @@ def font_current(output=None, error=None, run=None):
     error = error or sys.stderr
     run = run or subprocess.run
     if OMARCHY:
-        print("Omarchy owns appearance; showing installed Gooarchy font state only.", file=error)
+        print("Showing the current Fontconfig and Ghostty font state on Omarchy.", file=error)
     try:
         saved = read_saved_font()
         effective = fontconfig_effective_family(run=run)
@@ -520,31 +515,63 @@ def font_current(output=None, error=None, run=None):
         return 1
     print(f"Saved monospace family: {saved or 'none'}", file=output)
     print(f"Fontconfig effective monospace: {effective or 'unknown'}", file=output)
-    ghostty_bin = shutil.which("ghostty")
+    ghostty_availability_error = None
+    try:
+        ghostty_bin = shutil.which("ghostty")
+    except OSError as exception:
+        ghostty_bin = None
+        ghostty_availability_error = exception
     if not ghostty_bin:
-        print("Ghostty: unavailable; not installed by this command.", file=output)
+        if ghostty_availability_error:
+            print(f"Ghostty configured family: unknown (availability could not be checked: "
+                  f"{ghostty_availability_error}).", file=output)
+            print(f"Ghostty availability could not be checked: {ghostty_availability_error}; "
+                  "Fontconfig state remains available.", file=error)
+        else:
+            print("Ghostty configured family: unknown (Ghostty is unavailable).", file=output)
+            print("Ghostty is unavailable; Fontconfig state remains available.", file=error)
         return 0
-    configured, config_error = ghostty_configured_family(run=run)
-    default, default_error = ghostty_configured_family(run=run, defaults=True)
+    try:
+        configured, config_error = ghostty_configured_family(run=run)
+        default, default_error = ghostty_configured_family(run=run, defaults=True)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        configured, default = None, None
+        config_error = default_error = str(exception)
     if config_error or default_error:
         detail = config_error or default_error
-        print(f"Ghostty configured family: unknown ({detail})", file=error)
-        return 1
+        print(f"Ghostty configured family: unknown ({detail}).", file=output)
+        print(f"Ghostty configuration could not be read: {detail}; Fontconfig state remains available.",
+              file=error)
+        return 0
     if configured is None:
         configured = default
     label = "default" if configured == default else "configured"
     print(f"Ghostty {label} family: {configured or 'unknown'}", file=output)
     if saved:
         try:
-            available = font_inventory(run=run)
+            fontconfig = set(font_inventory(run=run))
         except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
-            print(f"Saved family compatibility is unknown: {exception}", file=error)
-        else:
-            if saved.casefold() not in {family.casefold() for family in available}:
-                print(f"Saved family is unavailable: {saved}", file=error)
-                print(f"Fontconfig fallback: {effective or 'unknown'}", file=error)
-            elif effective and saved.casefold() != effective.casefold():
-                print(f"Fontconfig is using {effective}; the saved choice is {saved}.", file=error)
+            print(f"Fontconfig saved-family availability is unknown: {exception}; saved family "
+                  f"{saved} and effective family {effective or 'unknown'} remain as shown.", file=error)
+            return 0
+        try:
+            ghostty = ghostty_font_families(run=run)
+            ghostty_error = None
+        except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+            ghostty = None
+            ghostty_error = exception
+        available = (fontconfig if ghostty is None else
+                     {family.casefold() for family in fontconfig}
+                     & {family.casefold() for family in ghostty})
+        if ghostty is None:
+            detail = f"unknown ({ghostty_error})" if ghostty_error else "unknown"
+            print(f"Ghostty font compatibility is {detail}; Fontconfig remains available.",
+                  file=error)
+        if saved.casefold() not in {family.casefold() for family in available}:
+            print(f"Saved family is unavailable: {saved}", file=error)
+            print(f"Fontconfig fallback: {effective or 'unknown'}", file=error)
+        elif effective and saved.casefold() != effective.casefold():
+            print(f"Fontconfig is using {effective}; the saved choice is {saved}.", file=error)
     return 0
 
 
@@ -552,107 +579,160 @@ def set_font(family, output=None, error=None, run=None):
     output = output or sys.stdout
     error = error or sys.stderr
     run = run or subprocess.run
-    if OMARCHY:
-        print("Omarchy owns appearance; font selection was not changed.", file=error)
-        return 1
+    if not family.strip():
+        print("A monospace family is required.", file=error)
+        return 2
     try:
         families = font_inventory(run=run)
     except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
-        print(f"Font selection was not changed: {exception}", file=error)
-        return 1
-    selected = next((installed for installed in families
-                     if installed.casefold() == family.casefold()), None)
-    if selected is None:
-        print(f"Font is not an installed compatible monospace family: {family}", file=error)
+        families = None
+        print(f"Fontconfig inventory is unknown ({exception}); the requested preference will "
+              "still be saved and its effective value reported.", file=error)
+    selected = None if families is None else next(
+        (installed for installed in families if installed.casefold() == family.casefold()), None)
+    if families is not None and selected is None:
+        print(f"Font is not an installed Fontconfig monospace family: {family}", file=error)
         return 2
-    family = selected
+    if selected is not None:
+        family = selected
+
+    try:
+        ghostty_bin = shutil.which("ghostty")
+    except OSError as exception:
+        ghostty_bin = None
+        print(f"Ghostty availability is unknown: {exception}; Fontconfig selection will continue.",
+              file=error)
+    ghostty_supported = True
+    try:
+        ghostty_families = ghostty_font_families(executable=ghostty_bin, run=run)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        ghostty_families = None
+        ghostty_supported = None
+        print(f"Ghostty font compatibility is unknown: {exception}; Fontconfig selection will continue.",
+              file=error)
+    if ghostty_families is None:
+        ghostty_supported = None
+        if ghostty_bin is None:
+            print("Ghostty is unavailable; Fontconfig selection will continue.", file=error)
+    elif family.casefold() not in {supported.casefold() for supported in ghostty_families}:
+        ghostty_supported = False
+        print(f"Ghostty does not list {family} as supported; its font preference will remain "
+              "unchanged while Fontconfig selection continues.", file=error)
 
     fontconfig_path = fontconfig_fragment_path()
-    ghostty_fragment = ghostty_fragment_path()
-    config_path = ghostty_config_path()
-    paths = (fontconfig_path, ghostty_fragment, config_path)
-    try:
-        snapshots = {path: _snapshot(path) for path in paths}
-    except (OSError, RuntimeError) as exception:
-        print(f"Font selection was not changed: {exception}", file=error)
-        return 1
     try:
         old_fontconfig = fontconfig_effective_family(run=run)
     except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
-        print(f"Font selection was not changed: Fontconfig could not be read: {exception}",
-              file=error)
-        return 1
-    old_ghostty, ghostty_error = ghostty_configured_family(run=run)
-    if ghostty_error:
-        print(f"Font selection was not changed: {ghostty_error}", file=error)
-        return 1
+        old_fontconfig = None
+        print(f"Fontconfig's previous monospace value is unknown: {exception}; "
+              "the selected preference will still be saved.", file=error)
+    old_ghostty = None
+    if ghostty_supported is not False and ghostty_bin:
+        try:
+            old_ghostty, ghostty_error = ghostty_configured_family(run=run)
+        except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+            old_ghostty, ghostty_error = None, str(exception)
+        if ghostty_error:
+            print(f"Ghostty's previous configured family is unknown: {ghostty_error}; "
+                  "Fontconfig selection will continue.", file=error)
+
     try:
         atomic_write(fontconfig_path, _fontconfig_fragment(family), mode=0o600)
+    except (OSError, RuntimeError) as exception:
+        print(f"Fontconfig preference was not saved: {exception}", file=error)
+        return 1
+
+    print(f"Saved monospace family: {family}", file=output)
+    if families is None:
+        print(f"Fontconfig could not confirm that {family} is installed; the requested preference "
+              "was saved and its effective value is reported below.", file=error)
+    try:
+        effective = fontconfig_effective_family(run=run)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        effective = None
+        print(f"Fontconfig match could not be verified: {exception}; "
+              f"the saved preference remains {family}.", file=error)
+    print(f"Fontconfig effective monospace: {effective or 'unknown'}", file=output)
+    if effective and effective.casefold() != family.casefold():
+        print(f"Fontconfig did not resolve the selected family {family}; "
+              f"the saved preference remains and {effective} is effective.", file=error)
+    elif effective:
+        print("New Fontconfig lookups use this family; cached applications may need a new launch.",
+              file=output)
+    if OMARCHY:
+        print(f"Omarchy Fontconfig monospace selection: {old_fontconfig or 'unknown'} -> "
+              f"{effective or 'unknown'}.", file=output)
+        if effective and effective.casefold() == family.casefold():
+            print("Selected by this explicit font command.", file=output)
+        else:
+            print(f"This explicit font command requested {family}; its effective Fontconfig "
+                  f"result is {effective or 'unknown'}.", file=error)
+    elif old_fontconfig and effective and old_fontconfig.casefold() != effective.casefold():
+        print(f"Fontconfig monospace override: {old_fontconfig} -> {effective} (Gooarchy font choice).",
+              file=output)
+
+    if ghostty_supported is False:
+        print(f"Ghostty font preference was not changed; Fontconfig remains saved as {family}.",
+              file=error)
+        return 0
+
+    ghostty_fragment = ghostty_fragment_path()
+    config_path = ghostty_config_path()
+    ghostty_paths = (ghostty_fragment, config_path)
+    ghostty_snapshots = {}
+    try:
+        ghostty_snapshots = {path: _snapshot(path) for path in ghostty_paths}
         atomic_write(ghostty_fragment, _ghostty_fragment(family), mode=0o600)
-        original_config_bytes = b"" if snapshots[config_path] is None else snapshots[config_path][0]
+        original_config_bytes = (b"" if ghostty_snapshots[config_path] is None
+                                 else ghostty_snapshots[config_path][0])
         original_config = original_config_bytes.decode("utf-8")
         updated_config = _ghostty_include(original_config, ghostty_fragment).encode("utf-8")
         if updated_config != original_config_bytes:
             atomic_write(config_path, updated_config, mode=0o600)
-    except (OSError, RuntimeError) as exception:
+    except (OSError, UnicodeError, RuntimeError) as exception:
         restore_errors = []
-        for path in reversed(paths):
+        for path in reversed(ghostty_paths):
+            if path not in ghostty_snapshots:
+                continue
             try:
-                _restore(path, snapshots[path])
+                _restore(path, ghostty_snapshots[path])
             except (OSError, RuntimeError) as restore_error:
                 restore_errors.append(f"{path}: {restore_error}")
-        detail = f"Font selection was not applied: {exception}"
+        detail = (f"Ghostty font configuration was not updated: {exception}; "
+                  f"Fontconfig remains saved as {family}")
         if restore_errors:
-            detail += "; configuration rollback failed: " + "; ".join(restore_errors)
+            detail += "; Ghostty rollback failed: " + "; ".join(restore_errors)
         print(detail, file=error)
-        return 1
+        return 0
 
-    try:
-        effective = fontconfig_effective_family(run=run)
-    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
-        print(f"Saved font family: {family}; Fontconfig match could not be verified: {exception}",
-              file=error)
-        return 1
-    print(f"Saved monospace family: {family}", file=output)
-    if effective and effective.casefold() == family.casefold():
-        print(f"Fontconfig effective monospace: {effective}", file=output)
-        if old_fontconfig and old_fontconfig.casefold() != effective.casefold():
-            print(f"Fontconfig monospace override: {old_fontconfig} -> {effective} (Gooarchy font choice).",
-                  file=output)
-        print("New Fontconfig lookups use this family; cached applications may need a new launch.",
-              file=output)
-    else:
-        print(f"Fontconfig effective monospace: {effective or 'unknown'}", file=error)
-        print("A higher-priority Fontconfig rule prevents the selected family from applying.",
-              file=error)
-        return 1
-
-    if old_ghostty and old_ghostty.casefold() != family.casefold():
-        print(f"Ghostty font override: {old_ghostty} -> {family} (the selected Gooarchy font).",
-              file=output)
-    ghostty_bin = shutil.which("ghostty")
     if not ghostty_bin:
-        print("Ghostty: unavailable; the saved fragment will apply if Ghostty is installed later.",
-              file=error)
-        return 1
-    configured, config_error = ghostty_configured_family(run=run)
+        print(f"Ghostty: unavailable; Fontconfig is saved as {family}, and the Gooarchy font "
+              "fragment is ready for a future Ghostty configuration.", file=error)
+        return 0
+    try:
+        configured, config_error = ghostty_configured_family(run=run)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        configured, config_error = None, str(exception)
     if config_error:
-        print(f"Saved font family: {family}; Ghostty configuration is not confirmed: {config_error}",
-              file=error)
-        return 1
+        print(f"Ghostty configuration is unknown ({config_error}); "
+              f"Fontconfig remains saved as {family}.", file=error)
+        return 0
     if configured is None:
-        print(f"Saved font family: {family}; Ghostty's configured family is not confirmed.",
+        print(f"Ghostty configured family is unknown; Fontconfig remains saved as {family}.",
               file=error)
-        return 1
+        return 0
+    print(f"Ghostty configured family: {old_ghostty or 'unknown'} -> {configured}.", file=output)
     if configured.casefold() != family.casefold():
-        print(f"Saved font family: {family}; Ghostty still resolves {configured}.", file=error)
-        print("A higher-priority Ghostty configuration prevents the selected family from applying.",
+        print(f"Ghostty still resolves {configured}; Fontconfig remains saved as {family}.",
               file=error)
-        return 1
-    reloaded, detail = reload_ghostty(run=run)
+        return 0
+    try:
+        reloaded, detail = reload_ghostty(run=run)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+        reloaded, detail = False, str(exception)
     if not reloaded:
-        print(f"Saved font family: {family}; Ghostty reload failed: {detail}", file=error)
-        return 1
+        print(f"Ghostty reload failed: {detail}; Fontconfig remains saved as {family}.", file=error)
+        return 0
     print(f"{detail}; existing-window appearance is not inferred from the reload request.", file=output)
     return 0
 
@@ -665,22 +745,29 @@ def font_command(args, output=None, error=None, run=None):
         return font_current(output=output, error=error, run=run)
     if args == ["list"]:
         if OMARCHY:
-            print("Omarchy owns appearance; listing installed Gooarchy-compatible fonts only.",
+            print("Omarchy owns appearance; listing installed Fontconfig monospace families.",
                   file=error)
         try:
-            families = font_inventory(run=run)
+            fontconfig = font_inventory(run=run)
         except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
-            print(f"Cannot list compatible fonts: {exception}", file=error)
+            print(f"Cannot list installed Fontconfig monospace fonts: {exception}", file=error)
             return 1
-        for family in families:
-            print(family, file=output)
-        if not shutil.which("ghostty"):
-            print("Ghostty is unavailable; these are installed Fontconfig monospace families.",
+        ghostty_error = None
+        try:
+            ghostty = ghostty_font_families(run=run)
+        except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as exception:
+            ghostty = None
+            ghostty_error = exception
+        if ghostty is None:
+            detail = f"unknown ({ghostty_error})" if ghostty_error else "unavailable"
+            print(f"Ghostty compatibility is {detail}; listing installed Fontconfig monospace families.",
                   file=error)
+        for family in fontconfig:
+            print(family, file=output)
         return 0
-    if len(args) == 2 and args[0] == "set":
+    if len(args) == 2 and args[0] in ("set", "pick"):
         return set_font(args[1], output=output, error=error, run=run)
-    print("usage: gooarchy-theme-integrations font <current|list|set FAMILY>", file=error)
+    print("usage: gooarchy-theme-integrations font <current|list|set FAMILY|pick FAMILY>", file=error)
     return 2
 
 
@@ -692,21 +779,27 @@ def apply(mode=None):
         return 0
     try:
         values = palette(mode)
-    except (OSError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
-        print(f"Gooarchy: couldn't read the selected theme: {error}", file=sys.stderr)
-        return 1
-    strata_ok = True
+    except (OSError, UnicodeError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
+        print(f"Gooarchy: optional Strata/Chromium theme colors are unavailable: {error}; "
+              "the requested theme links remain selected.", file=sys.stderr)
+        return 0
     try:
         update_strata(values)
-    except (OSError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
-        print(f"Gooarchy: couldn't update Strata's Gooarchy theme: {error}", file=sys.stderr)
-        strata_ok = False
+    except (OSError, UnicodeError, RuntimeError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
+        print(f"Gooarchy: couldn't update Strata's Gooarchy theme: {error}; "
+              "the requested theme links remain selected and Chromium will still be updated.",
+              file=sys.stderr)
     color = values.get("accent", "").lower()
     if not re.fullmatch(r"#[0-9a-f]{6}", color):
-        print("Gooarchy: the selected theme accent is not a six-digit hex color", file=sys.stderr)
-        return 1
-    chromium_ok = update_chromium(color)
-    return 0 if strata_ok and chromium_ok else 1
+        print("Gooarchy: Chromium's selected theme accent is unavailable; "
+              "the requested theme links remain selected.", file=sys.stderr)
+        return 0
+    try:
+        update_chromium(color)
+    except (OSError, UnicodeError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"Gooarchy: Chromium theme integration failed: {error}; "
+              "the requested theme links remain selected.", file=sys.stderr)
+    return 0
 
 
 def main():
@@ -714,7 +807,8 @@ def main():
     if args and args[0] == "font":
         return font_command(args[1:])
     if len(args) > 1 or (len(args) == 1 and args[0] not in ("light", "dark")):
-        print("usage: gooarchy-theme-integrations [light|dark] | font <current|list|set FAMILY>",
+        print("usage: gooarchy-theme-integrations [light|dark] | "
+              "font <current|list|set FAMILY|pick FAMILY>",
               file=sys.stderr)
         return 2
     return apply(args[0] if args else None)

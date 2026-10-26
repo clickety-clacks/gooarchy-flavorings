@@ -114,14 +114,163 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-wallpaper-state-") as temporar
     expect("invalid wallpaper input leaves the saved choice unchanged",
            code == 2 and (config / "gooarchy" / "wallpapers.json").read_bytes() == prior)
 
-    with patch.object(wallpaper, "_omarchy_owns_appearance", return_value=True):
+    omarchy_home = root / "omarchy-home"
+    background_link = omarchy_home / ".local/state/omarchy/current/background"
+    background_link.parent.mkdir(parents=True)
+    previous_omarchy = root / "stock" / "old.webp"
+    previous_omarchy.parent.mkdir()
+    previous_omarchy.write_bytes(b"old")
+    background_link.symlink_to(previous_omarchy)
+    output = []
+    errors = []
+    calls = []
+
+    def set_omarchy_background(command, **kwargs):
+        calls.append(command)
+        background_link.unlink()
+        background_link.symlink_to(command[1])
+        return result()
+
+    with patch.object(wallpaper, "_omarchy_owns_appearance", return_value=True), \
+            patch.object(wallpaper.shutil, "which", return_value="/tools/omarchy-theme-bg-set"), \
+            patch.dict(os.environ, {"HOME": str(omarchy_home)}):
         code = wallpaper.set_wallpaper(
-            variant, "a.webp", type("Out", (), {"write": lambda self, text: None})(),
-            type("Err", (), {"write": lambda self, text: None})(),
-            run=lambda command, **kwargs: result(),
+            variant, "a.webp", type("Out", (), {"write": lambda self, text: output.append(text)})(),
+            type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+            run=set_omarchy_background,
         )
-    expect("Omarchy ownership refuses a wallpaper write", code == 1
-           and (config / "gooarchy" / "wallpapers.json").read_bytes() == prior)
+    saved = json.loads((config / "gooarchy" / "wallpapers.json").read_text())
+    selected_omarchy = (backgrounds / "a.webp").absolute()
+    expect("explicit Omarchy wallpaper set saves Gooarchy choice and uses its existing setter",
+           code == 0 and saved == {str(variant): "a.webp"}
+           and calls == [["/tools/omarchy-theme-bg-set", str(selected_omarchy)]]
+           and f"{previous_omarchy} -> {selected_omarchy}" in "".join(output)
+           and "requested by this wallpaper command" in "".join(output)
+           and "Visible wallpaper: unconfirmed" in "".join(output),
+           "".join(output) + "\n" + "".join(errors))
+
+    current_output = []
+    current_errors = []
+    with patch.object(wallpaper, "_omarchy_owns_appearance", return_value=True), \
+            patch.dict(os.environ, {"HOME": str(omarchy_home)}):
+        current_code = wallpaper.dispatch(
+            ["current"],
+            output=type("Out", (), {"write": lambda self, text: current_output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: current_errors.append(text)})(),
+            run=lambda command, **kwargs: result(stdout=f"{variant}\n"),
+        )
+    expect("Omarchy current distinguishes its selected link from the Gooarchy saved choice",
+           current_code == 0
+           and f"Omarchy effective wallpaper selection: {selected_omarchy}" in "".join(current_output)
+           and "Saved choice: a.webp" in "".join(current_output)
+           and "Visible wallpaper: unknown" in "".join(current_output))
+
+    external_omarchy = root / "omarchy" / "outside.webp"
+    external_omarchy.parent.mkdir()
+    external_omarchy.write_bytes(b"external")
+    background_link.unlink()
+    background_link.symlink_to(external_omarchy)
+    changed_output = []
+    with patch.object(wallpaper, "_omarchy_owns_appearance", return_value=True), \
+            patch.dict(os.environ, {"HOME": str(omarchy_home)}):
+        changed_code = wallpaper.dispatch(
+            ["current"],
+            output=type("Out", (), {"write": lambda self, text: changed_output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: None})(),
+            run=lambda command, **kwargs: result(stdout=f"{variant}\n"),
+        )
+    expect("current reports a later Omarchy selection without replacing Gooarchy's saved choice",
+           changed_code == 0
+           and "Saved choice: a.webp" in "".join(changed_output)
+           and f"Omarchy effective wallpaper selection: {external_omarchy}" in "".join(changed_output))
+
+    pick_output = []
+    pick_errors = []
+    def pick_omarchy_background(command, **kwargs):
+        if command == [str(wallpaper.LOOKUP)]:
+            return result(stdout=f"{variant}\n")
+        return set_omarchy_background(command, **kwargs)
+
+    with patch.object(wallpaper, "_omarchy_owns_appearance", return_value=True), \
+            patch.object(wallpaper.shutil, "which", return_value="/tools/omarchy-theme-bg-set"), \
+            patch.dict(os.environ, {"HOME": str(omarchy_home)}):
+        pick_code = wallpaper.dispatch(
+            ["pick", "b.png"],
+            output=type("Out", (), {"write": lambda self, text: pick_output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: pick_errors.append(text)})(),
+            run=pick_omarchy_background,
+        )
+    expect("explicit Omarchy wallpaper pick uses the same selection setter",
+           pick_code == 0
+           and calls[-1] == ["/tools/omarchy-theme-bg-set", str((backgrounds / "b.png").absolute())]
+           and "requested by this wallpaper command" in "".join(pick_output)
+           and json.loads((config / "gooarchy" / "wallpapers.json").read_text())
+           == {str(variant): "b.png"}, "".join(pick_output) + "\n" + "".join(pick_errors))
+
+    background_link.unlink()
+    background_link.symlink_to(selected_omarchy)
+
+    def next_omarchy_background(command, **kwargs):
+        calls.append(command)
+        background_link.unlink()
+        background_link.symlink_to(command[1])
+        return result()
+
+    next_output = []
+    with patch.object(wallpaper, "_omarchy_owns_appearance", return_value=True), \
+            patch.object(wallpaper.shutil, "which", return_value="/tools/omarchy-theme-bg-set"), \
+            patch.dict(os.environ, {"HOME": str(omarchy_home)}):
+        next_code = wallpaper.dispatch(
+            ["next"],
+            output=type("Out", (), {"write": lambda self, text: next_output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: None})(),
+            run=lambda command, **kwargs: result(stdout=f"{variant}\n")
+            if command == [str(wallpaper.LOOKUP)] else next_omarchy_background(command, **kwargs),
+        )
+    expect("Omarchy next advances from the effective installed image through the existing setter",
+           next_code == 0 and calls[-1] == ["/tools/omarchy-theme-bg-set", str((backgrounds / "b.png").absolute())]
+           and "requested by this wallpaper command" in "".join(next_output))
+
+    failed_set_errors = []
+    failed_set_output = []
+    def failed_omarchy_set(command, **kwargs):
+        if command == [str(wallpaper.LOOKUP)]:
+            return result(stdout=f"{variant}\n")
+        calls.append(command)
+        return result(stderr="Omarchy setter failed", returncode=1)
+
+    with patch.object(wallpaper, "_omarchy_owns_appearance", return_value=True), \
+            patch.object(wallpaper.shutil, "which", return_value="/tools/omarchy-theme-bg-set"), \
+            patch.dict(os.environ, {"HOME": str(omarchy_home)}):
+        failed_set_code = wallpaper.dispatch(
+            ["set", "a.webp"],
+            output=type("Out", (), {"write": lambda self, text: failed_set_output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: failed_set_errors.append(text)})(),
+            run=failed_omarchy_set,
+        )
+    expect("failed Omarchy apply is reported while the successfully saved wallpaper request exits successfully",
+           failed_set_code == 0 and "Omarchy wallpaper apply failed" in "".join(failed_set_errors)
+           and f"{(backgrounds / 'b.png').absolute()} -> {(backgrounds / 'b.png').absolute()}"
+           in "".join(failed_set_errors)
+           and "Gooarchy choice remains saved" in "".join(failed_set_errors)
+           and "Visible wallpaper: unconfirmed" in "".join(failed_set_output),
+           "".join(failed_set_errors))
+
+    unavailable_errors = []
+    with patch.object(wallpaper, "_omarchy_owns_appearance", return_value=True), \
+            patch.object(wallpaper.shutil, "which", return_value=None), \
+            patch.dict(os.environ, {"HOME": str(omarchy_home)}):
+        unavailable_code = wallpaper.set_wallpaper(
+            variant, "a.webp", type("Out", (), {"write": lambda self, text: None})(),
+            type("Err", (), {"write": lambda self, text: unavailable_errors.append(text)})(),
+            run=lambda command, **kwargs: (_ for _ in ()).throw(AssertionError("no setter should run")),
+        )
+    expect("a missing Omarchy setter warns while keeping the requested Gooarchy choice saved",
+           unavailable_code == 0 and "omarchy-theme-bg-set was not found" in "".join(unavailable_errors)
+           and f"{(backgrounds / 'b.png').absolute()} -> {(backgrounds / 'b.png').absolute()}"
+           in "".join(unavailable_errors)
+           and json.loads((config / "gooarchy" / "wallpapers.json").read_text())
+           == {str(variant): "a.webp"})
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-wallpaper-apply-report-") as temporary:
     root = Path(temporary)
@@ -305,6 +454,57 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-refresh-optional-scottland-fai
            and "Scottland color-scheme reapply is unavailable" in errors.getvalue()
            and "theme links were updated and wallpaper refresh will continue" in errors.getvalue())
 
+    calls.clear()
+    wallpaper_steps.clear()
+    errors = io.StringIO()
+    command.write_text("mocked command\n")
+
+    def unexpected_scottland_failure(argv, **kwargs):
+        calls.append(tuple(argv))
+        if tuple(argv) == (str(lookup), "--pair"):
+            return result(stdout=json.dumps({"light": str(light), "dark": str(dark)}))
+        raise RuntimeError("unexpected optional integration failure")
+
+    with patch.dict(os.environ, {
+            "OMARCHY_PATH": str(root / "omarchy-not-installed"),
+            "XDG_RUNTIME_DIR": str(root / "runtime"),
+            "WAYLAND_DISPLAY": "wayland-test",
+            "SCOTTLAND_HOOKS": str(hooks),
+    }), patch.object(refresh, "_refresh_running_wallpaper",
+                     side_effect=lambda: wallpaper_steps.append("continued")), \
+            redirect_stderr(errors):
+        unexpected_code = refresh.refresh(current, lookup, run=unexpected_scottland_failure)
+
+    expect("unexpected optional Scottland exception cannot skip wallpaper refresh or fail theme refresh",
+           unexpected_code == 0
+           and calls == [(str(lookup), "--pair"), (str(command), "once")]
+           and wallpaper_steps == ["continued"]
+           and "unexpected optional integration failure" in errors.getvalue()
+           and "wallpaper refresh will continue" in errors.getvalue())
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-refresh-wallpaper-error-") as temporary:
+    root = Path(temporary)
+    current = root / "config" / "gooarchy" / "current-theme"
+    light = root / "themes" / "light"
+    dark = root / "themes" / "dark"
+    light.mkdir(parents=True)
+    dark.mkdir(parents=True)
+    lookup = root / "gooarchy-theme-lookup"
+    errors = io.StringIO()
+    with patch.dict(os.environ, {"OMARCHY_PATH": str(root / "omarchy-not-installed")}), \
+            patch.object(refresh, "_refresh_running_wallpaper",
+                         side_effect=RuntimeError("owner is unavailable")), \
+            redirect_stderr(errors):
+        refresh_code = refresh.refresh(
+            current, lookup,
+            run=lambda argv, **kwargs: result(
+                stdout=json.dumps({"light": str(light), "dark": str(dark)})),
+        )
+    expect("optional wallpaper-owner failure warns without failing the completed theme-link refresh",
+           refresh_code == 0 and os.readlink(current / "light") == str(light)
+           and "Gooarchy wallpaper refresh failed: owner is unavailable" in errors.getvalue()
+           and "theme links remain updated" in errors.getvalue())
+
 
 class WallpaperChild:
     def __init__(self, failure=False):
@@ -368,23 +568,43 @@ expect("swaybg's decode and image-read failures are recognized",
        and not wallpaper._swaybg_load_error("Found config * for output DP-1"))
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-font-inventory-") as temporary:
-    root = Path(temporary)
     calls = []
 
     def run(command, **kwargs):
         calls.append(command)
-        if "+list-fonts" in command:
-            return result(stdout="Fira Code\n  Fira Code Regular\nIBM Plex Mono\n  IBM Plex Mono Bold\n")
         return result(stdout="Fira Code\t100\nIBM Plex Mono\t100\nProportional Sans\t0\n")
 
-    with patch.object(integrations.shutil, "which", side_effect=lambda name: f"/tools/{name}"):
+    with patch.object(integrations.shutil, "which", return_value=None):
         families = integrations.font_inventory(run=run)
-    expect("font choices are the intersection of installed monospace and Ghostty families",
-           families == ["Fira Code", "IBM Plex Mono"] and len(calls) == 2, families)
+        output = []
+        errors = []
+        code = integrations.font_command(
+            ["list"],
+            output=type("Out", (), {"write": lambda self, text: output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+            run=run,
+        )
+    expect("Fontconfig inventory remains available without Ghostty",
+           families == ["Fira Code", "IBM Plex Mono"] and len(calls) == 2
+           and code == 0 and "".join(output) == "Fira Code\nIBM Plex Mono\n"
+           and "Ghostty compatibility is unavailable" in "".join(errors),
+           str(families) + " / " + "".join(errors))
+
+    with patch.object(integrations.shutil, "which", return_value="/tools/ghostty"), \
+            patch.object(integrations, "ghostty_font_families", return_value={"Fira Code"}):
+        supported_output = []
+        supported_code = integrations.font_command(
+            ["list"],
+            output=type("Out", (), {"write": lambda self, text: supported_output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: None})(),
+            run=run,
+        )
+    expect("Fontconfig list is not filtered by Ghostty's optional inventory",
+           supported_code == 0 and "".join(supported_output) == "Fira Code\nIBM Plex Mono\n",
+           "".join(supported_output))
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-font-write-") as temporary:
-    root = Path(temporary)
-    config = root / "config"
+    config = Path(temporary) / "config"
     ghostty_dir = config / "ghostty"
     ghostty_dir.mkdir(parents=True)
     user_config = ghostty_dir / "config"
@@ -395,6 +615,7 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-font-write-") as temporary:
     output = []
     errors = []
     with patch.object(integrations, "font_inventory", return_value=["Fira Code"]), \
+            patch.object(integrations, "ghostty_font_families", return_value={"Fira Code"}), \
             patch.object(integrations, "ghostty_configured_family",
                          side_effect=[("Monospace", None), ("Fira Code", None)]), \
             patch.object(integrations, "fontconfig_effective_family", return_value="Fira Code"), \
@@ -409,16 +630,60 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-font-write-") as temporary:
     ghostty_fragment = config / "gooarchy" / "font.ghostty"
     parsed = ElementTree.parse(fontconfig).getroot()
     fragment = ghostty_fragment.read_text()
-    expect("font set writes valid owned fragments and preserves the existing config bytes",
+    expect("font set writes Fontconfig and Ghostty preferences while preserving user config bytes",
            code == 0 and parsed.findtext(".//edit/string") == "Fira Code"
            and fragment == 'font-family = ""\nfont-family = "Fira Code"\n'
            and user_config.read_bytes().startswith(original)
            and user_config.read_bytes().count(integrations.GHOSTTY_INCLUDE_MARKER.encode()) == 1
-           and "Saved monospace family: Fira Code" in "".join(output), errors)
+           and "Fontconfig effective monospace: Fira Code" in "".join(output), errors)
 
     expect("the marked Ghostty include is idempotent",
            integrations._ghostty_include(user_config.read_bytes().decode("utf-8"), ghostty_fragment)
            == user_config.read_bytes().decode("utf-8"))
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-font-ghostty-unsupported-") as temporary:
+    config = Path(temporary) / "config"
+    integrations.CONFIG = config
+    integrations.OMARCHY = False
+    errors = []
+    with patch.object(integrations, "font_inventory", return_value=["Fira Code"]), \
+            patch.object(integrations, "ghostty_font_families", return_value={"Other Mono"}), \
+            patch.object(integrations, "ghostty_configured_family") as configured, \
+            patch.object(integrations, "fontconfig_effective_family",
+                         side_effect=["Monospace", "Fira Code"]), \
+            patch.object(integrations.shutil, "which", return_value="/tools/ghostty"):
+        code = integrations.set_font(
+            "Fira Code", output=type("Out", (), {"write": lambda self, text: None})(),
+            error=type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+        )
+    fontconfig = config / "fontconfig" / "conf.d" / "99-gooarchy-monospace.conf"
+    expect("known Ghostty incompatibility disables only Ghostty and preserves Fontconfig selection",
+           code == 0 and fontconfig.is_file()
+           and not (config / "gooarchy" / "font.ghostty").exists()
+           and not (config / "ghostty" / "config").exists()
+           and not configured.called
+           and "does not list Fira Code as supported" in "".join(errors)
+           and "Fontconfig remains saved as Fira Code" in "".join(errors), errors)
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-font-inventory-unknown-") as temporary:
+    config = Path(temporary) / "config"
+    integrations.CONFIG = config
+    integrations.OMARCHY = False
+    errors = []
+    with patch.object(integrations, "font_inventory", side_effect=RuntimeError("fc-list failed")), \
+            patch.object(integrations, "fontconfig_effective_family",
+                         side_effect=["Monospace", "Fira Code"]), \
+            patch.object(integrations.shutil, "which", return_value=None):
+        code = integrations.set_font(
+            "Fira Code", output=type("Out", (), {"write": lambda self, text: None})(),
+            error=type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+        )
+    fontconfig = config / "fontconfig" / "conf.d" / "99-gooarchy-monospace.conf"
+    expect("unknown Fontconfig inventory warns but does not block the requested preference write",
+           code == 0 and fontconfig.is_file()
+           and b"<string>Fira Code</string>" in fontconfig.read_bytes()
+           and "Fontconfig inventory is unknown" in "".join(errors)
+           and "Fontconfig could not confirm that Fira Code is installed" in "".join(errors), errors)
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-font-crlf-rollback-") as temporary:
     config = Path(temporary) / "config"
@@ -439,6 +704,7 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-font-crlf-rollback-") as tempo
             raise OSError("simulated failure after Ghostty config replacement")
 
     with patch.object(integrations, "font_inventory", return_value=["Fira Code"]), \
+            patch.object(integrations, "ghostty_font_families", return_value={"Fira Code"}), \
             patch.object(integrations, "ghostty_configured_family",
                          side_effect=[("Monospace", None), ("Fira Code", None)]), \
             patch.object(integrations, "fontconfig_effective_family", return_value="Fira Code"), \
@@ -450,33 +716,48 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-font-crlf-rollback-") as tempo
             "Fira Code", output=type("Out", (), {"write": lambda self, text: None})(),
             error=type("Err", (), {"write": lambda self, text: errors.append(text)})(),
         )
-    expect("font rollback restores CRLF Ghostty config bytes exactly",
-           code == 1 and failed_after_config_write["value"] and user_config.read_bytes() == original,
-           errors)
+    fontconfig = config / "fontconfig" / "conf.d" / "99-gooarchy-monospace.conf"
+    expect("Ghostty rollback preserves CRLF bytes without rolling back Fontconfig",
+           code == 0 and failed_after_config_write["value"] and user_config.read_bytes() == original
+           and fontconfig.is_file()
+           and b"<string>Fira Code</string>" in fontconfig.read_bytes()
+           and "Fontconfig remains saved as Fira Code" in "".join(errors), errors)
 
-with tempfile.TemporaryDirectory(prefix="gooarchy-font-no-write-") as temporary:
-    root = Path(temporary)
-    config = root / "config"
+with tempfile.TemporaryDirectory(prefix="gooarchy-font-invalid-") as temporary:
+    config = Path(temporary) / "config"
     integrations.CONFIG = config
     integrations.OMARCHY = False
-    output = []
-    errors = []
     with patch.object(integrations, "font_inventory", return_value=["Fira Code"]):
         code = integrations.set_font(
-            "Missing Family", output=type("Out", (), {"write": lambda self, text: output.append(text)})(),
-            error=type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+            "Missing Family", output=type("Out", (), {"write": lambda self, text: None})(),
+            error=type("Err", (), {"write": lambda self, text: None})(),
         )
     expect("an unavailable font is rejected before any configuration write",
            code == 2 and not config.exists())
 
+with tempfile.TemporaryDirectory(prefix="gooarchy-omarchy-font-set-") as temporary:
+    config = Path(temporary) / "config"
+    integrations.CONFIG = config
     integrations.OMARCHY = True
-    with patch.object(integrations, "font_inventory") as inventory:
+    output = []
+    errors = []
+    with patch.object(integrations, "font_inventory", return_value=["Fira Code"]), \
+            patch.object(integrations, "fontconfig_effective_family",
+                         side_effect=["Monospace", "Fira Code"]), \
+            patch.object(integrations.shutil, "which", return_value=None):
         code = integrations.set_font(
-            "Fira Code", output=type("Out", (), {"write": lambda self, text: None})(),
-            error=type("Err", (), {"write": lambda self, text: None})(),
+            "Fira Code", output=type("Out", (), {"write": lambda self, text: output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: errors.append(text)})(),
         )
-    expect("Omarchy ownership refuses a font write before probing or writing",
-           code == 1 and not config.exists() and not inventory.called)
+    fontconfig = config / "fontconfig" / "conf.d" / "99-gooarchy-monospace.conf"
+    ghostty_fragment = config / "gooarchy" / "font.ghostty"
+    ghostty_config = config / "ghostty" / "config"
+    expect("explicit Omarchy font command writes both owned preferences and reports the override",
+           code == 0 and fontconfig.is_file() and ghostty_fragment.is_file()
+           and integrations.GHOSTTY_INCLUDE_MARKER in ghostty_config.read_text()
+           and "Omarchy Fontconfig monospace selection: Monospace -> Fira Code" in "".join(output)
+           and "Ghostty: unavailable" in "".join(errors),
+           "".join(output) + "\n" + "".join(errors))
 
 with tempfile.TemporaryDirectory(prefix="gooarchy-font-current-error-") as temporary:
     integrations.CONFIG = Path(temporary) / "config"
@@ -492,6 +773,27 @@ with tempfile.TemporaryDirectory(prefix="gooarchy-font-current-error-") as tempo
     expect("font current reports an unreadable Fontconfig state without a traceback",
            code == 1 and "Font state could not be read" in "".join(errors)
            and not output)
+
+with tempfile.TemporaryDirectory(prefix="gooarchy-font-current-ghostty-unreadable-") as temporary:
+    integrations.CONFIG = Path(temporary) / "config"
+    integrations.OMARCHY = False
+    output = []
+    errors = []
+    with patch.object(integrations, "read_saved_font", return_value="Fira Code"), \
+            patch.object(integrations, "fontconfig_effective_family", return_value="Fira Code"), \
+            patch.object(integrations, "ghostty_configured_family",
+                         return_value=(None, "Ghostty configuration is unreadable")), \
+            patch.object(integrations.shutil, "which", return_value="/tools/ghostty"):
+        code = integrations.font_current(
+            output=type("Out", (), {"write": lambda self, text: output.append(text)})(),
+            error=type("Err", (), {"write": lambda self, text: errors.append(text)})(),
+        )
+    expect("font current retains Fontconfig state when Ghostty configuration is unreadable",
+           code == 0 and "Fontconfig effective monospace: Fira Code" in "".join(output)
+           and "Ghostty configured family: unknown" in "".join(output)
+           and "Ghostty configuration is unreadable" in "".join(errors)
+           and "Fontconfig state remains available" in "".join(errors),
+           "".join(output) + "\n" + "".join(errors))
 
 print(f"{failures} failure(s)")
 raise SystemExit(1 if failures else 0)

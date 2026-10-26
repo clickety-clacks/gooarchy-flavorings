@@ -5,6 +5,7 @@ import json
 import os
 import select
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -24,7 +25,7 @@ RUNTIME_LOCK = "gooarchy-wallpaper.lock"
 REFRESH_REQUEST = "gooarchy-wallpaper.request"
 REFRESH_ACK = "gooarchy-wallpaper.ack"
 HELP = (
-    "Usage: gooarchy-wallpaper <current|list|set NAME|next>\n"
+    "Usage: gooarchy-wallpaper <current|list|set NAME|pick NAME|next>\n"
     "       gooarchy-wallpaper  (run the wallpaper owner)\n"
 )
 
@@ -392,7 +393,8 @@ def applied_wallpaper():
 
 def status_for_current(variant, output, error):
     files, selected, state, saved = wallpaper_state(variant)
-    if _omarchy_owns_appearance():
+    omarchy = _omarchy_owns_appearance()
+    if omarchy:
         print("Omarchy owns appearance; these are Gooarchy's saved wallpaper choices.", file=error)
     print(f"Variant: {variant}", file=output)
     if state == "saved-unavailable":
@@ -404,6 +406,16 @@ def status_for_current(variant, output, error):
     else:
         print(f"Saved choice: none", file=output)
         print(f"Effective choice: {selected.name} (default)", file=output)
+    if omarchy:
+        current, read_error = read_omarchy_background()
+        if current is None:
+            print("Omarchy effective wallpaper selection: unknown", file=output)
+            print(f"Omarchy current/background could not be read: {read_error}", file=error)
+        else:
+            print(f"Omarchy effective wallpaper selection: {current}", file=output)
+        print("Visible wallpaper: unknown (the selection link does not confirm presentation).",
+              file=output)
+        return 0
     applied = applied_wallpaper()
     if applied is None:
         print("Applied in this session: unknown or wallpaper owner unavailable", file=output)
@@ -412,6 +424,77 @@ def status_for_current(variant, output, error):
     else:
         print(f"Applied in this session: {Path(applied).name} (differs from effective choice)",
               file=output)
+    return 0
+
+
+def read_omarchy_background():
+    """Read Omarchy's selected image link without claiming that the image is visible."""
+    link = Path(os.environ.get("HOME") or Path.home()) / ".local/state/omarchy/current/background"
+    try:
+        target = os.readlink(link)
+    except OSError as exception:
+        return None, f"{link}: {exception}"
+    target_path = Path(target)
+    if not target_path.is_absolute():
+        target_path = link.parent / target_path
+    return Path(os.path.normpath(str(target_path))), None
+
+
+def apply_omarchy_wallpaper(selected, output, error, run=subprocess.run):
+    """Apply an explicit wallpaper choice using Omarchy's existing setter."""
+    previous, previous_error = read_omarchy_background()
+    if previous is None:
+        print(f"Omarchy previous wallpaper selection: unknown ({previous_error}).", file=error)
+    try:
+        setter = shutil.which("omarchy-theme-bg-set")
+    except OSError as exception:
+        current, current_error = read_omarchy_background()
+        previous_text = str(previous) if previous else "unknown"
+        current_text = str(current) if current else f"unknown ({current_error})"
+        print(f"Omarchy wallpaper selection after this command: {previous_text} -> {current_text}; "
+              f"{selected} was requested by this wallpaper command, but setter availability "
+              f"could not be checked: {exception}. Gooarchy choice remains saved.", file=error)
+        print("Visible wallpaper: unknown.", file=output)
+        return 0
+    if not setter:
+        current, current_error = read_omarchy_background()
+        previous_text = str(previous) if previous else "unknown"
+        current_text = str(current) if current else f"unknown ({current_error})"
+        print(f"Omarchy wallpaper selection after this command: {previous_text} -> {current_text}; "
+              f"{selected} was requested by this wallpaper command but was not applied because "
+              "omarchy-theme-bg-set was not found. Gooarchy choice remains saved.", file=error)
+        print("Visible wallpaper: unknown.", file=output)
+        return 0
+    try:
+        result = run([setter, str(selected)], capture_output=True, text=True, timeout=20)
+    except (OSError, UnicodeError, subprocess.SubprocessError) as exception:
+        result = None
+        failure = str(exception)
+    else:
+        failure = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+    current, current_error = read_omarchy_background()
+    if result is None or result.returncode != 0:
+        previous_text = str(previous) if previous else "unknown"
+        state = str(current) if current else f"unknown ({current_error})"
+        print(f"Omarchy wallpaper apply failed: {failure}; selection after this command is "
+              f"{previous_text} -> {state}; {selected} was requested by this wallpaper command. "
+              "Gooarchy choice remains saved.", file=error)
+    elif current is None:
+        previous_text = str(previous) if previous else "unknown"
+        print(f"Omarchy wallpaper selection after this command is {previous_text} -> unknown "
+              f"({current_error}); {selected} was requested by this wallpaper command, but the "
+              "effective selection is unconfirmed. Gooarchy choice remains saved.", file=error)
+    elif current == selected:
+        print(f"Omarchy wallpaper selection: {previous or 'unknown'} -> {current} "
+              "(requested by this wallpaper command).", file=output)
+    else:
+        previous_text = str(previous) if previous else "unknown"
+        print(f"Omarchy wallpaper selection after this command: {previous_text} -> {current}.",
+              file=output)
+        print(f"Omarchy selected {current}, not the requested {selected}; the request came from "
+              "this wallpaper command and the Gooarchy choice remains saved.", file=error)
+    print("Visible wallpaper: unconfirmed (the selection link does not confirm presentation).",
+          file=output)
     return 0
 
 
@@ -427,7 +510,7 @@ def request_live_application(expected, output, error, run=subprocess.run):
             print(f"Saved wallpaper: {expected.name}; live application is unconfirmed.", file=error)
             print(f"theme refresh timed out; live application is unconfirmed: {exception}", file=error)
         return 0
-    except (OSError, subprocess.SubprocessError) as exception:
+    except (OSError, UnicodeError, subprocess.SubprocessError) as exception:
         applied = applied_wallpaper()
         if applied == str(expected):
             print(f"Saved and applied wallpaper: {expected.name}", file=output)
@@ -464,9 +547,7 @@ def request_live_application(expected, output, error, run=subprocess.run):
 
 
 def set_wallpaper(variant, name, output, error, run=subprocess.run):
-    if _omarchy_owns_appearance():
-        print("Omarchy owns appearance; wallpaper selection was not changed.", file=error)
-        return 1
+    omarchy = _omarchy_owns_appearance()
     variant = Path(variant)
     files, _, _, _ = wallpaper_state(variant)
     selected = next((path for path in files if path.name == name), None)
@@ -481,6 +562,8 @@ def set_wallpaper(variant, name, output, error, run=subprocess.run):
         print(f"Wallpaper was not saved: {exception}", file=error)
         return 1
     print(f"Saved wallpaper choice: {selected.name}", file=output)
+    if omarchy:
+        return apply_omarchy_wallpaper(selected.absolute(), output, error, run=run)
     return request_live_application(selected, output, error, run=run)
 
 
@@ -491,7 +574,7 @@ def dispatch(args, output=None, error=None, run=subprocess.run):
         output.write(HELP)
         return 0
     if args not in (["current"], ["list"], ["next"]) and not (
-            len(args) == 2 and args[0] == "set"):
+            len(args) == 2 and args[0] in ("set", "pick")):
         print(HELP, file=error)
         return 2
     try:
@@ -508,9 +591,17 @@ def dispatch(args, output=None, error=None, run=subprocess.run):
             return 0
         if args == ["next"]:
             if _omarchy_owns_appearance():
-                print("Omarchy owns appearance; wallpaper selection was not changed.", file=error)
-                return 1
-            index = next(i for i, path in enumerate(files) if path == selected)
+                current, current_error = read_omarchy_background()
+                index = next((i for i, path in enumerate(files)
+                              if current is not None and path.absolute() == current), None)
+                if index is None:
+                    if current is None:
+                        print(f"Omarchy current wallpaper is unknown ({current_error}); "
+                              f"advancing from Gooarchy's saved/default choice {selected.name}.",
+                              file=error)
+                    index = next(i for i, path in enumerate(files) if path == selected)
+            else:
+                index = next(i for i, path in enumerate(files) if path == selected)
             chosen = files[(index + 1) % len(files)]
             return set_wallpaper(variant, chosen.name, output, error, run=run)
         return set_wallpaper(variant, args[1], output, error, run=run)

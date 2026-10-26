@@ -211,8 +211,16 @@ def refresh(current_theme=CURRENT_THEME, lookup=LOOKUP, run=subprocess.run):
                     temp.unlink()
                 except FileNotFoundError:
                     pass
-        _reapply_scottland_palette(run)
-        _refresh_running_wallpaper()
+        try:
+            _reapply_scottland_palette(run)
+        except Exception as error:
+            print(f"Scottland color-scheme reapply failed: {error}; theme links were updated and "
+                  "wallpaper refresh will continue", file=sys.stderr)
+        try:
+            _refresh_running_wallpaper()
+        except Exception as error:
+            print(f"Gooarchy wallpaper refresh failed: {error}; theme links remain updated.",
+                  file=sys.stderr)
     finally:
         os.close(lock_fd)
     return 0

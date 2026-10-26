@@ -29,7 +29,11 @@ integrations() {
   fi
 }
 set_mode() {
-  gsettings set $key "prefer-$1" && integrations "$1" && warn
+  gsettings set $key "prefer-$1" || return $?
+  if ! integrations "$1"; then
+    echo "Warning: Strata/Chromium theme integrations reported a failure after the desktop mode changed; prefer-$1 remains selected." >&2
+  fi
+  warn
 }
 case ${1:-} in
   "") echo "$(current) (Sunlight schedule: $(sunlight && echo on || echo off))" ;;
