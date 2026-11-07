@@ -27,17 +27,21 @@ came the same way from Scottland's `omarchy/themes/`.
 | `libexec/gooarchy-theme-integrations` | One Strata Watercolor theme entry and Chromium managed color, updated with the session color-scheme | `/usr/lib/gooarchy-flavorings/gooarchy-theme-integrations` |
 | `libexec/gooarchy-browser-policy` | Root-owned writer for Chromium's fixed managed-policy path | `/usr/lib/gooarchy-flavorings/gooarchy-browser-policy` |
 | `etc/sudoers.d/90-gooarchy-browser-policy` | Passwordless permission for the color-only writer | `/etc/sudoers.d/90-gooarchy-browser-policy` (installed only after `visudo` validation) |
+| systemd user enablement | Enables Agentd and the attention bridge in the user's default target | `/usr/lib/systemd/user/default.target.wants/` |
 | `themes/watercolor-dream-light/`, `watercolor-dream-dark/` | The Watercolor Dream themes as complete Omarchy theme directories, exactly as Scottland had them | each directory as it is, links kept, at `/usr/share/gooarchy-flavorings/themes/<theme>/`, with `background.webp` and `ghostty` generated from the theme beside it |
 | `themes/ghostty-theme.py` | Builds a Ghostty theme from a theme's `colors.toml` (at install) | not installed |
 | `tmux/tmux.conf`, `profile.d/`, `xdg/` | tmux titles, mosh titles, default apps | `/etc/tmux.conf`, `/etc/profile.d/`, `/etc/xdg/` |
 | `tests/flavorings-apply-test.py` | Tests `gooarchy-flavorings-apply` in throwaway home directories | not installed |
 | `tests/widget-packages-test.py` | Checks both WG7 manifests and the staged widget install tree | not installed |
 | `tests/theme-integrations-test.py` | Tests Strata preservation, Chromium policy refresh, Omarchy inertness and staged install | not installed |
+| `tests/agentd-attention-package-test.py` | Checks the staged Agentd unit enablement links and package boundary | not installed |
 | `LICENSES/omarchy-browser-policy-MIT.txt` | Retained notice for the Omarchy-derived Chromium policy integration | `/usr/share/licenses/gooarchy-flavorings/omarchy-browser-policy-MIT.txt` |
 
 ## On Omarchy
 
 Installed by Scottland's Omarchy adapter, the flavorings keep Omarchy's own look and keys:
+
+- The Agentd attention bridge is enabled for user sessions on both Gooarchy and the Omarchy adapter.
 
 - The look stays Omarchy's. The wallpaper hook starts nothing, and `gooarchy-flavorings-apply` neither
   sets the color scheme nor touches Chromium or Ghostty (those steps aren't marked as applied either).

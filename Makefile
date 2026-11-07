@@ -13,6 +13,7 @@ THEME_SHARE = $(SHARE)/themes
 SCOTTLAND = $(DESTDIR)/usr/lib/scottland
 SCOTTLAND_WIDGETS = $(DESTDIR)/usr/share/scottland/widgets
 LICENSE_DIR = $(DESTDIR)/usr/share/licenses/gooarchy-flavorings
+USER_SYSTEMD = $(DESTDIR)/usr/lib/systemd/user
 
 .PHONY: install test
 install: validate-sudoers
@@ -32,6 +33,10 @@ install: validate-sudoers
 	install -Dm755 libexec/gooarchy-theme-refresh "$(DESTDIR)/usr/lib/gooarchy-flavorings/gooarchy-theme-refresh"
 	install -Dm755 bin/gooarchy-theme "$(DESTDIR)/usr/bin/gooarchy-theme"
 	install -Dm755 bin/gooarchy-flavorings-apply "$(DESTDIR)/usr/bin/gooarchy-flavorings-apply"
+	# Vendor wants links enable both packaged user units without writing into user homes.
+	install -d "$(USER_SYSTEMD)/default.target.wants"
+	ln -sfn ../agentd.service "$(USER_SYSTEMD)/default.target.wants/agentd.service"
+	ln -sfn ../agentd-attention.service "$(USER_SYSTEMD)/default.target.wants/agentd-attention.service"
 	install -Dm644 tmux/tmux.conf "$(DESTDIR)/etc/tmux.conf"
 	install -Dm644 profile.d/gooarchy-flavorings.sh "$(DESTDIR)/etc/profile.d/gooarchy-flavorings.sh"
 	install -Dm644 xdg/scottland-mimeapps.list "$(DESTDIR)/etc/xdg/scottland-mimeapps.list"
@@ -59,3 +64,4 @@ test:
 	python3 tests/flavorings-apply-test.py
 	python3 tests/theme-integrations-test.py
 	python3 tests/look-wallpaper-font-test.py
+	python3 tests/agentd-attention-package-test.py
