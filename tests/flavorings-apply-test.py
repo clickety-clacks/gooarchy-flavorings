@@ -1774,8 +1774,11 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
     kept = [line for line in ini_text.splitlines()
             if not any(k in line for k in ("picker inserts the selected emoji", "emoji_picker", "file_manager", "_browser", "Strata is", "Chromium is", "apps start"))]
     expect("Omarchy: the config hook leaves out Super+Ctrl+E and Super+Shift+F/B and nothing else",
-           out.splitlines() == kept and "KEY_E" not in out and "KEY_F" not in out
-           and "KEY_B" not in out and "tap_to_click" in out, out)
+           out.splitlines() == kept
+           and "binding_emoji_picker = <super> <ctrl> KEY_E" not in out
+           and "binding_file_manager = <super> <shift> KEY_F" not in out
+           and "binding_browser = <super> <shift> KEY_B" not in out
+           and "tap_to_click" in out, out)
     expect("Omarchy: the Scottland transparency shortcut stays available",
            out.count("binding_window_transparency = <super> KEY_BACKSPACE") == 1
            and out.count("command_window_transparency = scottland-ctl transparency toggle") == 1)
