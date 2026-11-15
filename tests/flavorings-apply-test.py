@@ -1764,7 +1764,7 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
     write(hook, read(os.path.join(repo, "scottland", "config.d", "40-gooarchy-flavorings"))
           .replace("/usr/share/gooarchy-flavorings/scottland.ini", ini), executable=True)
     ini_text = read(ini)
-    expect("Scottland transparency shortcut has one labeled Super+Backspace core binding",
+    expect("Scottland transparency shortcut has one Super+Backspace core binding",
            ini_text.count("binding_window_transparency = <super> KEY_BACKSPACE") == 1
            and ini_text.count("command_window_transparency = scottland-ctl transparency toggle") == 1)
     gooarchy = subprocess.run([hook, "/base.ini"], env=environment(home), capture_output=True, text=True)
