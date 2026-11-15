@@ -17,7 +17,7 @@ came the same way from Scottland's `omarchy/themes/`.
 
 | Path | What | Installed as |
 |---|---|---|
-| `scottland/flavorings.ini` | Touchpad, file manager and browser keys for Scottland | `/usr/share/gooarchy-flavorings/scottland.ini` |
+| `scottland/flavorings.ini` | Touchpad, file manager, browser and transparency-toggle keys for Scottland | `/usr/share/gooarchy-flavorings/scottland.ini` |
 | `scottland/widgets/weather/` | Weather rail widget package | `/usr/share/scottland/widgets/gooarchy-weather/` |
 | `scottland/widgets/system-stats/` | System Stats rail widget package | `/usr/share/scottland/widgets/gooarchy-system-stats/` |
 | `scottland/config.d/`, `autostart.d/`, `accent.d/` | Scottland hooks: append the config above, start the wallpaper and the per-user defaults, give halos the theme's accent | `/usr/lib/scottland/<hook dir>/` |
@@ -47,6 +47,8 @@ Installed by Scottland's Omarchy adapter, the flavorings keep Omarchy's own look
   sets the color scheme nor touches Chromium or Ghostty (those steps aren't marked as applied either).
 - Super+Shift+F and Super+Shift+B stay Omarchy's file manager and browser: the config hook leaves
   those two bindings out. The touchpad and screenshot settings are appended as on Gooarchy.
+- Super+Backspace adds Scottland's focused-window transparency toggle; the adapter keeps skipping
+  Omarchy's Hyprland-only native toggle.
 - Everything else that takes effect over what the user had is listed in Scottland's override report,
   with what it was and what it is now: the Claude Code and Codex bells Gooarchy set (while
   they're still set that way), the tmux and mosh titles where the user's own config doesn't set

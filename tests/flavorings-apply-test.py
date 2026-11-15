@@ -17,7 +17,8 @@ permanently.
 
 On Omarchy (a stand-in OMARCHY_PATH): the wallpaper hook starts nothing; the color scheme, Chromium
 and Ghostty are neither written nor marked; the config hook leaves out Super+Ctrl+E and Super+Shift+F/B
-and adds nothing else; the override report fragment lists only what changed (the bells Gooarchy set, tmux
+while adding the Scottland transparency toggle; the override report fragment lists only what changed
+(the bells Gooarchy set, tmux
 and mosh titles the user doesn't set, default apps that win over the previous one, Strata only when
 installed), is rewritten only when it changes and is removed when nothing is left. The Gooarchy
 cases run with no Omarchy, whatever the test machine has. Text-size guards cover setup, theme
@@ -1762,15 +1763,22 @@ with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as oma
     hook = os.path.join(home, "40-gooarchy-flavorings")
     write(hook, read(os.path.join(repo, "scottland", "config.d", "40-gooarchy-flavorings"))
           .replace("/usr/share/gooarchy-flavorings/scottland.ini", ini), executable=True)
+    ini_text = read(ini)
+    expect("Scottland transparency shortcut has one labeled Super+Backspace core binding",
+           ini_text.count("binding_window_transparency = <super> KEY_BACKSPACE") == 1
+           and ini_text.count("command_window_transparency = scottland-ctl transparency toggle") == 1)
     gooarchy = subprocess.run([hook, "/base.ini"], env=environment(home), capture_output=True, text=True)
     expect("Gooarchy: the config hook keeps default-insert Super+Ctrl+E for scottland-emoji",
-           gooarchy.stdout == read(ini) and not os.path.exists(os.path.join(home, "apply.log")))
+           gooarchy.stdout == ini_text and not os.path.exists(os.path.join(home, "apply.log")))
     out = subprocess.run([hook, "/base.ini"], env=environment(home, omarchy), capture_output=True, text=True).stdout
-    kept = [line for line in read(ini).splitlines()
+    kept = [line for line in ini_text.splitlines()
             if not any(k in line for k in ("picker inserts the selected emoji", "emoji_picker", "file_manager", "_browser", "Strata is", "Chromium is", "apps start"))]
     expect("Omarchy: the config hook leaves out Super+Ctrl+E and Super+Shift+F/B and nothing else",
            out.splitlines() == kept and "KEY_E" not in out and "KEY_F" not in out
            and "KEY_B" not in out and "tap_to_click" in out, out)
+    expect("Omarchy: the Scottland transparency shortcut stays available",
+           out.count("binding_window_transparency = <super> KEY_BACKSPACE") == 1
+           and out.count("command_window_transparency = scottland-ctl transparency toggle") == 1)
     expect("Omarchy: the config hook brings the report up to date", "apply --override-report" in (read(os.path.join(home, "apply.log")) or ""))
 
     started = os.path.join(home, "wallpaper-started")
